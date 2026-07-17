@@ -42,6 +42,15 @@
             "promoted": "PROMOTED!",
             "demoted": "DEMOTED!",
             "finalgun": "FINAL GUN!"
+        },
+        "feed": {
+            "firstblood_title": "FIRST BLOOD",
+            "firstblood_line": "{}",
+            "streak_line": "{}  ·  {} STREAK",
+            "streak_word_spree": "KILLING SPREE",
+            "streak_word_rampage": "RAMPAGE",
+            "streak_word_unstoppable": "UNSTOPPABLE",
+            "streak_word_godlike": "GODLIKE"
         }
     }
 }

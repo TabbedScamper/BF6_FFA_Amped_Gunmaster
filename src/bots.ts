@@ -21,6 +21,7 @@ import { DEBUG_MODE } from './config.ts';
 import { botSlots } from './teams.ts';
 import { getIdentity } from './roster.ts';
 import { spawnMarkerPositions } from './spawns.ts';
+import { nearestPowerupPos } from './powerups.ts';
 
 const BOT_TICK_MS = 300; // director cadence (cheap; no raycasts)
 const ENGAGE_RANGE = 60; // within this, push toward the target; else roam
@@ -101,7 +102,8 @@ function tickBot(bot: mod.Player, markers: mod.Vector[], now: number): void {
             // Roam toward a spawn marker to find action.
             if (now - st.lastMoveAt >= REPATH_MOVE_MS || st.roamTarget === null) {
                 st.lastMoveAt = now;
-                st.roamTarget = pickRoam(markers, selfId);
+                // Prefer grabbing a nearby powerup; else wander a spawn marker.
+                st.roamTarget = nearestPowerupPos(pos, 45) ?? pickRoam(markers, selfId);
                 if (st.roamTarget) {
                     try {
                         mod.AISetMoveSpeed(bot, mod.MoveSpeed.Run);

@@ -42,11 +42,14 @@ import {
     hasPendingDemotion,
 } from './powerups.ts';
 import { destroyAllHuds, destroyHud, ensureHud, flash, updateHud } from './hud.ts';
+import { announceFirstBlood, announceKillstreak, clearAnnouncements, STREAK_MILESTONES } from './announce.ts';
 
 const SK = (): mod.Any => mod.stringkeys;
 
 let matchOver = false;
 let gameStarted = false;
+let firstBloodAwarded = false;
+const killstreaks: Map<number, number> = new Map();
 
 // Human stats (bots carry theirs on the roster identity).
 interface HumanStats {
@@ -114,6 +117,7 @@ function announceAndEnd(winner: mod.Player): void {
     stopBotDirector();
     stopPowerups();
     destroyAllHuds();
+    clearAnnouncements();
     try {
         const winnerTeam = mod.GetTeam(winner);
         log('MATCH OVER — ladder complete');
@@ -132,6 +136,8 @@ Events.OnGameModeStarted.subscribe(() => {
     log('========== FFA GUNMASTER START ==========');
     matchOver = false;
     gameStarted = true;
+    firstBloodAwarded = false;
+    killstreaks.clear();
     initSlots();
     resetLadder();
     initSpawns();
@@ -185,6 +191,7 @@ Events.OnPlayerJoinGame.subscribe((player: mod.Player) => {
             if (teamId === null) {
                 const sacrifice = pickReplaceableBot();
                 if (sacrifice) {
+                    if (sacrifice.currentPlayerId !== null) clearPowerupState(sacrifice.currentPlayerId);
                     despawnBot(sacrifice);
                     teamId = assignHumanToSlot(player);
                 }
@@ -240,6 +247,15 @@ Events.OnPlayerEarnedKill.subscribe((killer: mod.Player, victim: mod.Player) => 
             statsOfHuman(killerId).kills++;
         }
 
+        // First blood + killstreak callouts (lobby-wide banner).
+        if (!firstBloodAwarded) {
+            firstBloodAwarded = true;
+            announceFirstBlood(killer);
+        }
+        const streak = (killstreaks.get(killerId) ?? 0) + 1;
+        killstreaks.set(killerId, streak);
+        if (STREAK_MILESTONES.includes(streak)) announceKillstreak(killer, streak);
+
         // Hot-potato: if the killer was carrying a demotion charge, dump it on the victim.
         onKillOffloadDemotion(killer, victim);
 
@@ -266,6 +282,7 @@ Events.OnPlayerDied.subscribe((player: mod.Player) => {
         // Hot-potato backfire: died still holding a demotion charge -> demote self.
         const backfire = hasPendingDemotion(playerId);
         onDeathBackfireDemotion(player);
+        killstreaks.set(playerId, 0);
         if (backfire > 0 && !mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
             flash(player, `DEMOTED!  −${backfire}  (died holding it)`, 'red', 2600);
         }

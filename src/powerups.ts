@@ -71,6 +71,56 @@ function log(msg: string): void {
     if (DEBUG_MODE) console.log(`[Powerups] ${msg}`);
 }
 
+function resolvePlayerById(playerId: number): mod.Player | null {
+    try {
+        const arr = mod.AllPlayers();
+        const n = mod.CountOf(arr);
+        for (let i = 0; i < n; i++) {
+            const p = mod.ValueInArray(arr, i) as mod.Player;
+            try {
+                if (mod.IsPlayerValid(p) && mod.GetObjId(p) === playerId) return p;
+            } catch {}
+        }
+    } catch {}
+    return null;
+}
+
+function spot(player: mod.Player, on: boolean): void {
+    try {
+        mod.SpotTarget(player, on ? mod.SpotStatus.SpotInBoth : mod.SpotStatus.Unspot);
+    } catch {}
+}
+
+/** Keep every demotion-carrier highlighted so victims can SEE who demoted them. */
+function spotCarriers(): void {
+    for (const playerId of pendingDemotion.keys()) {
+        const p = resolvePlayerById(playerId);
+        if (p) {
+            try {
+                if (mod.IsPlayerValid(p) && mod.GetSoldierState(p, mod.SoldierStateBool.IsAlive)) {
+                    mod.SpotTarget(p, mod.SpotStatus.SpotInBoth); // re-applied each tick to stay lit
+                }
+            } catch {}
+        }
+    }
+}
+
+/** Nearest live powerup position to a point within range (for the bot director). */
+export function nearestPowerupPos(from: mod.Vector, maxRange: number): mod.Vector | null {
+    let best: mod.Vector | null = null;
+    let bestD = maxRange;
+    for (const pu of live.values()) {
+        try {
+            const d = mod.DistanceBetween(from, pu.pos);
+            if (d < bestD) {
+                bestD = d;
+                best = pu.pos;
+            }
+        } catch {}
+    }
+    return best;
+}
+
 // A pooled one-shot sound: spawn, play to player, unspawn shortly after.
 function playSfx(sfx: mod.RuntimeSpawn_Common, player: mod.Player, amp: number = 1.0): void {
     try {
@@ -188,7 +238,7 @@ function checkPickups(): void {
         try {
             p = mod.ValueInArray(arr, i) as mod.Player;
             if (!mod.IsPlayerValid(p)) continue;
-            if (mod.GetSoldierState(p, mod.SoldierStateBool.IsAISoldier)) continue; // humans only
+            // Bots pick up too (they path toward powerups via the director).
             if (!mod.GetSoldierState(p, mod.SoldierStateBool.IsAlive)) continue;
         } catch {
             continue;
@@ -228,6 +278,7 @@ function applyPickup(player: mod.Player, pu: LivePowerup): void {
             pendingDemotion.set(playerId, (pendingDemotion.get(playerId) ?? 0) + pu.magnitude);
             playSfx(SFX_DEMO_LOADED, player, 1.5);
             const total = pendingDemotion.get(playerId) ?? pu.magnitude;
+            spot(player, true); // light them up for the whole lobby
             hud?.flash(player, `DEMOTION LOADED  −${total}  ·  GET A KILL!`, 'red', 2600);
             log(`DEMO ${pu.magnitude}x LOADED onto ${playerId} (pending ${total})`);
         }
@@ -245,9 +296,11 @@ export function onKillOffloadDemotion(killer: mod.Player, victim: mod.Player): v
         const n = pendingDemotion.get(killerId);
         if (!n || n <= 0) return;
         pendingDemotion.delete(killerId);
+        spot(killer, false); // no longer carrying it
         const newIdx = shiftTiers(victim, -n); // applies on the victim's respawn
         playSfx(SFX_DEMO_LOADED, killer, 1.5);
         hud?.flash(killer, `DUMPED IT!  −${n} ON THEM`, 'green');
+        hud?.flash(victim, `DEMOTED  −${n}  ·  killed by a marked player`, 'red', 2600);
         log(`offload: victim demoted ${n} -> tier ${newIdx}`);
     } catch {}
 }
@@ -259,6 +312,7 @@ export function onDeathBackfireDemotion(player: mod.Player): void {
         const n = pendingDemotion.get(playerId);
         if (!n || n <= 0) return;
         pendingDemotion.delete(playerId);
+        spot(player, false);
         const newIdx = shiftTiers(player, -n); // applies on their respawn
         log(`backfire: ${playerId} self-demoted ${n} -> tier ${newIdx}`);
     } catch {}
@@ -269,6 +323,10 @@ export function hasPendingDemotion(playerId: number): number {
 }
 
 export function clearPowerupState(playerId: number): void {
+    if (pendingDemotion.has(playerId)) {
+        const p = resolvePlayerById(playerId);
+        if (p) spot(p, false);
+    }
     pendingDemotion.delete(playerId);
 }
 
@@ -279,7 +337,10 @@ export function startPowerups(): void {
     stopPowerups();
     pendingDemotion.clear();
     spawnInterval = Timers.setInterval(spawnOne, POWERUP_SPAWN_INTERVAL_MS);
-    pickupInterval = Timers.setInterval(checkPickups, 250);
+    pickupInterval = Timers.setInterval(() => {
+        checkPickups();
+        spotCarriers();
+    }, 250);
     log('powerup system started');
 }
 
