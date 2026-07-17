@@ -87,9 +87,9 @@ const GUN_POOL: LadderTier[] = [
 // family set isn't reused, so nothing mismatches.
 // ---------------------------------------------------------------------------
 const AMPED_POOL: LadderTier[] = [
-    { weapon: W.Sidearm_M45A1, isAmped: true, cardName: 'AMPED M45A1', attachments: [A.Scope_R_MR_100x, A.Muzzle_Single_port_Brake, A.Barrel_5_Pencil, A.Magazine_11rnd_Magazine] },
+    { weapon: W.Sidearm_M45A1, isAmped: true, cardName: 'CAMARO', attachments: [A.Scope_R_MR_100x, A.Muzzle_Single_port_Brake, A.Barrel_5_Pencil, A.Magazine_11rnd_Magazine] },
     { weapon: W.Sidearm_P18, isAmped: true, cardName: 'AMPED P18', attachments: [A.Scope_R_MR_100x, A.Muzzle_CQB_Suppressor, A.Barrel_39_Pencil, A.Magazine_17rnd_Fast_Mag] },
-    { weapon: W.Sidearm_M44, isAmped: true, cardName: 'AMPED M44', attachments: [A.Scope_Iron_Sights, A.Barrel_675_Factory, A.Ammo_Match_Grade] },
+    { weapon: W.Sidearm_M44, isAmped: true, cardName: 'RAYGUN', attachments: [A.Scope_Iron_Sights, A.Barrel_675_Factory, A.Ammo_Match_Grade] },
     { weapon: W.Sidearm_GGH_22, isAmped: true, cardName: 'AMPED GGH-22', attachments: [A.Scope_R_MR_100x, A.Muzzle_CQB_Suppressor, A.Barrel_114mm_Pencil] },
     { weapon: W.SMG_KV9, isAmped: true, cardName: 'AMPED KV9', attachments: [A.Scope_Aperture_Sight, A.Muzzle_CQB_Suppressor, A.Barrel_55_Fluted, A.Magazine_17rnd_Fast_Mag] },
     { weapon: W.SMG_SGX, isAmped: true, cardName: 'AMPED SGX', attachments: [A.Scope_Aperture_Sight, A.Muzzle_CQB_Suppressor, A.Barrel_6_Fluted, A.Magazine_30rnd_Fast_Mag] },

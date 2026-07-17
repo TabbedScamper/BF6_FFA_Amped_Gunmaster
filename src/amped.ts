@@ -31,6 +31,14 @@ import {
     CHAIN_FREEZE_SLOW,
     CHAIN_FREEZE_DURATION_MS,
     CHAIN_FREEZE_MAX_TARGETS,
+    AMPED_EXPLOSION_RADIUS,
+    AMPED_EXPLOSION_DAMAGE,
+    AMPED_RAYGUN_RADIUS,
+    AMPED_RAYGUN_DAMAGE,
+    AMPED_FIRE_RADIUS,
+    AMPED_FIRE_DOT_DAMAGE,
+    AMPED_FIRE_DOT_TICKS,
+    AMPED_FIRE_DOT_INTERVAL_MS,
 } from './config.ts';
 import { currentTier, tierIsAmped } from './ladder.ts';
 
@@ -59,14 +67,24 @@ interface AmpedFxConfig {
     secondaryFx?: mod.RuntimeSpawn_Common;
     secondaryDespawnTime?: number;
     chainFreeze?: boolean; // the sniper signature (player-safe)
+    // SIGNATURE DAMAGE — the FX is only visual; these make it actually hurt.
+    explosionRadius?: number;
+    explosionDamage?: number;
+    fire?: boolean; // shotgun burn DOT in a small radius at the impact
 }
 
 const AMPED_DEFAULT_FX = RS.FX_BASE_Sparks_Pulse_L;
 
 const WEAPON_FX: Map<mod.Weapons, AmpedFxConfig> = new Map([
-    // M45A1 — explosive-round LOOK (no explosion damage)
-    [W.Sidearm_M45A1, { fx: RS.FX_Grenade_40mm_HE_Detonation, scale: 1, despawnTime: 1500 }],
-    // M44 — mortar-beacon flourish + incendiary burst (no damage)
+    // M45A1 "CAMARO" — explosive rounds: 40mm HE burst + radius damage.
+    [W.Sidearm_M45A1, {
+        fx: RS.FX_Grenade_40mm_HE_Detonation,
+        scale: 1,
+        despawnTime: 1500,
+        explosionRadius: AMPED_EXPLOSION_RADIUS,
+        explosionDamage: AMPED_EXPLOSION_DAMAGE,
+    }],
+    // M44 "RAYGUN" — mortar-beacon + incendiary flourish + radius damage.
     [W.Sidearm_M44, {
         fx: RS.FX_Gadget_DeployableMortar_Target_Area,
         despawnTime: 200,
@@ -75,16 +93,91 @@ const WEAPON_FX: Map<mod.Weapons, AmpedFxConfig> = new Map([
         aimOffset: 0.1,
         secondaryFx: RS.FX_Airburst_Incendiary_Detonation_Friendly,
         secondaryDespawnTime: 2000,
+        explosionRadius: AMPED_RAYGUN_RADIUS,
+        explosionDamage: AMPED_RAYGUN_DAMAGE,
     }],
-    // Shotguns — fire/burn LOOK (no DOT damage)
-    [W.Shotgun_M1014, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500 }],
-    [W.Shotgun_M87A1, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500 }],
-    [W.Shotgun_DB_12, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500 }],
-    // Snipers — chain-FROST (player-safe slow + frost visual, no damage)
+    // Shotguns — fire/burn: fizzle FX + a burn DOT in a small splash radius.
+    [W.Shotgun_M1014, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500, fire: true }],
+    [W.Shotgun_M87A1, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500, fire: true }],
+    [W.Shotgun_DB_12, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500, fire: true }],
+    // Snipers — chain-FROST (player-safe slow + frost visual, no damage).
     [W.Sniper_SV_98, { fx: RS.FX_RepairTool_Sparks_1P, despawnTime: 5000, chainFreeze: true }],
     [W.Sniper_M2010_ESR, { fx: RS.FX_RepairTool_Sparks_1P, despawnTime: 5000, chainFreeze: true }],
     [W.Sniper_Mini_Scout, { fx: RS.FX_RepairTool_Sparks_1P, despawnTime: 5000, chainFreeze: true }],
 ]);
+
+// --------------------------------------------------------------------------
+// SIGNATURE DAMAGE — radius + DOT, applied to ALL soldiers (players + bots)
+// except the shooter. DealDamage credits the shooter so kills promote them.
+// --------------------------------------------------------------------------
+function soldiersInRadius(center: mod.Vector, radius: number, excludeId: number): mod.Player[] {
+    const out: mod.Player[] = [];
+    try {
+        const arr = mod.AllPlayers();
+        const n = mod.CountOf(arr);
+        for (let i = 0; i < n; i++) {
+            const p = mod.ValueInArray(arr, i) as mod.Player;
+            try {
+                if (!mod.IsPlayerValid(p)) continue;
+                if (mod.GetObjId(p) === excludeId) continue;
+                if (!mod.GetSoldierState(p, mod.SoldierStateBool.IsAlive)) continue;
+                const pos = mod.GetSoldierState(p, mod.SoldierStateVector.GetPosition);
+                if (mod.DistanceBetween(center, pos) <= radius) out.push(p);
+            } catch {}
+        }
+    } catch {}
+    return out;
+}
+
+function explode(attacker: mod.Player, center: mod.Vector, radius: number, damage: number): void {
+    let attackerId = -1;
+    try {
+        attackerId = mod.GetObjId(attacker);
+    } catch {}
+    for (const p of soldiersInRadius(center, radius, attackerId)) {
+        try {
+            const pos = mod.GetSoldierState(p, mod.SoldierStateVector.GetPosition);
+            const falloff = 1 - mod.DistanceBetween(center, pos) / radius;
+            const dmg = Math.floor(damage * Math.max(0, falloff));
+            if (dmg > 0) mod.DealDamage(p, dmg, attacker);
+        } catch {}
+    }
+}
+
+function fireDot(attacker: mod.Player, center: mod.Vector): void {
+    let attackerId = -1;
+    try {
+        attackerId = mod.GetObjId(attacker);
+    } catch {}
+    // Snapshot victims at impact; tick the burn on each.
+    const victims = soldiersInRadius(center, AMPED_FIRE_RADIUS, attackerId).map((p) => mod.GetObjId(p));
+    for (let tick = 1; tick <= AMPED_FIRE_DOT_TICKS; tick++) {
+        Timers.setTimeout(() => {
+            for (const vid of victims) {
+                const p = resolvePlayer(vid);
+                try {
+                    if (p && mod.IsPlayerValid(p) && mod.GetSoldierState(p, mod.SoldierStateBool.IsAlive)) {
+                        mod.DealDamage(p, AMPED_FIRE_DOT_DAMAGE, attacker);
+                    }
+                } catch {}
+            }
+        }, tick * AMPED_FIRE_DOT_INTERVAL_MS);
+    }
+}
+
+function resolvePlayer(playerId: number): mod.Player | null {
+    try {
+        const arr = mod.AllPlayers();
+        const n = mod.CountOf(arr);
+        for (let i = 0; i < n; i++) {
+            const p = mod.ValueInArray(arr, i) as mod.Player;
+            try {
+                if (mod.IsPlayerValid(p) && mod.GetObjId(p) === playerId) return p;
+            } catch {}
+        }
+    } catch {}
+    return null;
+}
 
 // ---------------------------------------------------------------------------
 // FX object lifecycle — track spawned FX so we can despawn on timeout/cleanup.
@@ -262,6 +355,13 @@ function fireAmpedFx(player: mod.Player, weapon: mod.Weapons): void {
             spawnFx(fxType, hitPoint, rot, scale, cfg?.despawnTime);
             if (cfg?.secondaryFx) {
                 spawnFx(cfg.secondaryFx, hitPoint, ZERO, 1, cfg.secondaryDespawnTime);
+            }
+            // Signature damage — the FX is only cosmetic; these make it hurt.
+            if (cfg?.explosionRadius && cfg?.explosionDamage) {
+                explode(player, hitPoint, cfg.explosionRadius, cfg.explosionDamage);
+            }
+            if (cfg?.fire) {
+                fireDot(player, hitPoint);
             }
             if (cfg?.chainFreeze) {
                 applyChainFreeze(player, hitPoint);

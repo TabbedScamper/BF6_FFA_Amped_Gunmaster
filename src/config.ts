@@ -68,6 +68,19 @@ export const AMPED_HIT_SFX_AMP = 6.0; // base amplitude for the amped hit sound 
 export const AMPED_SOUND_CUTOFF_MS = 100; // crisp cutoff to avoid sound spam
 export const AMPED_FX_RAY_RANGE = 500; // how far to look for a surface to place FX
 
+// SIGNATURE AOE — the FX objects are purely visual, so these radius/DOT damage
+// values are what actually makes the explosive/raygun/fire effects DO something.
+// Applied to ALL soldiers (players AND bots) in radius, minus the shooter.
+// DealDamage(target, dmg, attacker) credits the shooter -> ladder promotion works.
+export const AMPED_EXPLOSION_RADIUS = 4; // M45A1 "CAMARO" explosive rounds
+export const AMPED_EXPLOSION_DAMAGE = 55;
+export const AMPED_RAYGUN_RADIUS = 4; // M44 raygun
+export const AMPED_RAYGUN_DAMAGE = 50;
+export const AMPED_FIRE_RADIUS = 2.5; // shotgun fire splash
+export const AMPED_FIRE_DOT_DAMAGE = 12; // per tick
+export const AMPED_FIRE_DOT_TICKS = 4;
+export const AMPED_FIRE_DOT_INTERVAL_MS = 700;
+
 // Chain-freeze (the sniper signature) — rebuilt PLAYER-SAFE:
 // SetSoldierEffect(FreezeStatusEffect) + SetPlayerMovementSpeedMultiplier work
 // on humans AND bots (the old AI-only immobilize silently no-oped on humans).
