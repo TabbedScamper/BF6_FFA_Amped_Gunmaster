@@ -30,5 +30,18 @@
             "Saints Quarter": "Saints Quarter",
             "Siege of Cairo": "Siege of Cairo"
         }
+    },
+    "ffa": {
+        "scoreboard": {
+            "gun": "GUN",
+            "kills": "KILLS",
+            "deaths": "DEATHS"
+        },
+        "hud": {
+            "tier": "GUN {} / {}",
+            "promoted": "PROMOTED!",
+            "demoted": "DEMOTED!",
+            "finalgun": "FINAL GUN!"
+        }
     }
 }

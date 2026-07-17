@@ -1,185 +1,265 @@
+// ============================================================================
+// FFA GUNMASTER — ENTRY POINT (vertical slice 1)
+// ============================================================================
+// The 28-team FFA scheme (DESIGN.md): team 1 = landing zone (size 4), teams
+// 2..28 = solo slots. Match start splits team 1 onto solo slots; bots keep a
+// MIN_PLAYERS floor with persistent identities (name/stats/ladder survive
+// respawns); humans replace bots as they join. First to finish the ladder wins.
+//
+// Slice 1: team split, bot backfill/replace, ladder + weapon give, anti-spawn-
+// kill spawn picks (distance + rolling LOS danger), CustomFFA scoreboard, win.
+// Later slices: amped FX tiers, promo/demo powerups, HUD/VO polish.
+// ============================================================================
+
 import { Events } from 'bf6-portal-utils/events/index.ts';
 import { Timers } from 'bf6-portal-utils/timers/index.ts';
-import { MultiClickDetector } from 'bf6-portal-utils/multi-click-detector/index.ts';
-import { MapDetector } from 'bf6-portal-utils/map-detector/index.ts';
-import { Vectors } from 'bf6-portal-utils/vectors/index.ts';
 
-import { DebugTool } from './debug-tool/index.ts';
-import { getPlayerStateVectorString } from './helpers/index.ts';
+import { DEBUG_MODE } from './config.ts';
+import { initSlots, splitLandingTeam, assignHumanToSlot, releaseHumanSlot, humanCount, botSlots } from './teams.ts';
+import {
+    adoptBotPlayer,
+    allIdentities,
+    backfillNeeded,
+    despawnBot,
+    getIdentity,
+    identityByCurrentPlayerId,
+    pickReplaceableBot,
+    respawnBot,
+    spawnBotIntoFreeSlot,
+} from './roster.ts';
+import { applyTierWeapon, onLadderKill, progressOf, removeHuman, resetLadder } from './ladder.ts';
+import { initSpawns, pickSpawn, startLosSampler, stopLosSampler } from './spawns.ts';
 
-let adminDebugTool: DebugTool | undefined;
-let telemetryInterval: number | undefined;
+const SK = (): mod.Any => mod.stringkeys;
 
-async function spawnVehicle(player: mod.Player, vehicleType: mod.VehicleList): Promise<void> {
-    const playerPosition = mod.GetSoldierState(player, mod.SoldierStateVector.GetPosition);
-    const playerFacingDirection = mod.GetSoldierState(player, mod.SoldierStateVector.GetFacingDirection);
+let matchOver = false;
+let gameStarted = false;
 
-    // Create position 20 meters in front of player (facing direction).
-    const position = mod.CreateVector(
-        mod.XComponentOf(playerPosition) + mod.XComponentOf(playerFacingDirection) * 20,
-        mod.YComponentOf(playerPosition),
-        mod.ZComponentOf(playerPosition) + mod.ZComponentOf(playerFacingDirection) * 20
-    );
+// Human stats (bots carry theirs on the roster identity).
+interface HumanStats {
+    kills: number;
+    deaths: number;
+}
+const humanStats: Map<number, HumanStats> = new Map();
 
-    adminDebugTool?.dynamicLog(`Spawning vehicle spawner at ${Vectors.getVectorString(position)}`);
+// Bot bodies awaiting adoption: spawner-driven deploys are matched FIFO to
+// identities that have no current body.
+const pendingBotIdentityIds: number[] = [];
 
-    const spawner = mod.SpawnObject(
-        mod.RuntimeSpawn_Common.VehicleSpawner,
-        position,
-        mod.CreateVector(0, 0, 0)
-    ) as mod.VehicleSpawner;
-
-    // Need to wait a bit before setting the vehicle spawner settings.
-    await mod.Wait(1);
-
-    adminDebugTool?.dynamicLog(`Setting vehicle spawner settings.`);
-
-    mod.SetVehicleSpawnerVehicleType(spawner, vehicleType);
-    mod.SetVehicleSpawnerAutoSpawn(spawner, true);
-    mod.SetVehicleSpawnerRespawnTime(spawner, 1);
-
-    adminDebugTool?.dynamicLog(`Spawning vehicle in 1 second.`);
-
-    // We do not want the vehicle spawner to spawn another vehicle after the first one has been destroyed, and if we
-    // simply set the auto spawn to false, the vehicle will still exist as an object, which is a waste of resourced.
-    // Instead, we subscribe to the OnVehicleSpawned event to know when a vehicle has spawned, determine if it is the
-    // vehicle we're looking for (based on its proximity to this spawner), and if it is, we disable automatic vehicle
-    // respawning from the vehicle spawner. Then, we subscribe to the OnVehicleDestroyed event to know when a vehicle]
-    // has been destroyed, and if it is the vehicle we're looking for (the one we just spawned), we can safely unspawn
-    // the spawner. This block shows the power of the `Events` module, and how it can be used to subscribe to and
-    // unsubscribe from events dynamically and in a specific context, to isolate and modularize code.
-    const unsubscribeFromOnVehicleSpawned = Events.OnVehicleSpawned.subscribe((vehicle) => {
-        const vehiclePosition = mod.GetVehicleState(vehicle, mod.VehicleStateVector.VehiclePosition);
-
-        // If the vehicle is not within 10 meters of the spawner, ignore it as it's not the vehicle we're looking for.
-        if (mod.DistanceBetween(vehiclePosition, position) > 10) return;
-
-        // Unsubscribe from the OnVehicleSpawned event as this context no longer needs to know when a vehicle has spawned.
-        unsubscribeFromOnVehicleSpawned();
-
-        adminDebugTool?.dynamicLog(`Vehicle spawned.`);
-
-        // Disable automatic vehicle respawning for the spawner as we're going to unspawn it once the vehicle's destroyed.
-        mod.SetVehicleSpawnerAutoSpawn(spawner, false);
-
-        const unsubscribeFromOnVehicleDestroyed = Events.OnVehicleDestroyed.subscribe((destroyedVehicle) => {
-            // If the destroyed vehicle is not the specific vehicle we're looking for, ignore it.
-            if (mod.GetObjId(destroyedVehicle) !== mod.GetObjId(vehicle)) return;
-
-            // Unsubscribe from the OnVehicleDestroyed event as this context no longer needs to know when the vehicle is destroyed.
-            unsubscribeFromOnVehicleDestroyed();
-
-            adminDebugTool?.dynamicLog(`Vehicle destroyed.`);
-
-            // Unspawn the vehicle spawner.
-            mod.UnspawnObject(spawner);
-
-            adminDebugTool?.dynamicLog(`Vehicle spawner unspawned.`);
-        });
-    });
+function log(msg: string): void {
+    if (DEBUG_MODE) console.log(`[FFA] ${msg}`);
 }
 
-function createAdminDebugTool(player: mod.Player): void {
-    // The admin player is player id 0 for non-persistent test servers,
-    // so don't do the rest of this unless it's the admin player.
-    if (mod.GetObjId(player) != 0) return;
-
-    // Create a debug tool with a static logger visible by default.
-    const debugToolOptions: DebugTool.Options = {
-        staticLogger: {
-            visible: true,
-        },
-        dynamicLogger: {
-            visible: false,
-        },
-        debugMenu: {
-            visible: false,
-        },
-    };
-
-    adminDebugTool = new DebugTool(player, debugToolOptions);
-
-    // Create a multi-click detector to open the debug menu when the player triple-clicks the interact key.
-    new MultiClickDetector(player, () => {
-        adminDebugTool?.showDebugMenu();
-    });
-
-    // Add a debug menu button to spawn an AH64 helicopter.
-    adminDebugTool?.addDebugMenuButton(mod.Message(mod.stringkeys.template.debug.buttons.spawnHelicopter), () =>
-        spawnVehicle(player, mod.VehicleList.AH64)
-    );
-
-    // Add a debug menu button to spawn a golf cart.
-    adminDebugTool?.addDebugMenuButton(mod.Message(mod.stringkeys.template.debug.buttons.spawnGolfCart), () =>
-        spawnVehicle(player, mod.VehicleList.GolfCart)
-    );
-
-    // Log a message to the static logger.
-    adminDebugTool?.staticLog(`Triple-click interact key to open debug menu.`, 0);
+function statsOfHuman(playerId: number): HumanStats {
+    let s = humanStats.get(playerId);
+    if (!s) {
+        s = { kills: 0, deaths: 0 };
+        humanStats.set(playerId, s);
+    }
+    return s;
 }
 
-function destroyAdminDebugTool(playerId: number): void {
-    // If the player is not the admin player, then we know the admin is still in the game, so we can exit this function.
-    if (playerId !== 0) return;
-
-    // Clear the telemetry interval so it doesn't continue to log the admin's position and facing direction, and
-    // destroy the debug tool.
-    Timers.clearInterval(telemetryInterval);
-    adminDebugTool?.destroy();
-    telemetryInterval = undefined;
-    adminDebugTool = undefined;
+function updateScoreboardFor(player: mod.Player): void {
+    try {
+        const playerId = mod.GetObjId(player);
+        const rec = progressOf(player);
+        const isBot = mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier);
+        const ident = isBot ? identityByCurrentPlayerId(playerId) : null;
+        const kills = isBot ? (ident?.kills ?? 0) : statsOfHuman(playerId).kills;
+        const deaths = isBot ? (ident?.deaths ?? 0) : statsOfHuman(playerId).deaths;
+        // Columns: Gun # (1-based tier), Kills, Deaths — sorted by Gun #.
+        mod.SetScoreboardPlayerValues(player, (rec?.ladderIndex ?? 0) + 1, kills, deaths);
+    } catch {}
 }
 
-function showTelemetry(player: mod.Player): void {
-    // The admin player is player id 0 for non-persistent test servers,
-    // so don't do the rest of this unless it's the admin player.
-    if (mod.GetObjId(player) != 0) return;
-
-    // Log the admin's position and facing direction to the static logger, in rows 1 and 2, every second.
-    telemetryInterval = Timers.setInterval(() => {
-        adminDebugTool?.staticLog(
-            `Position: ${getPlayerStateVectorString(player, mod.SoldierStateVector.GetPosition)}`,
-            1
-        );
-
-        adminDebugTool?.staticLog(
-            `Facing: ${getPlayerStateVectorString(player, mod.SoldierStateVector.GetFacingDirection)}`,
-            2
-        );
-    }, 1000);
+/** Best spawn position right now (falls back to a ring near origin pre-map-pass). */
+function bestSpawnPos(excludePlayerId: number, salt: number): mod.Vector {
+    const picked = pickSpawn(excludePlayerId);
+    if (picked) return picked.pos;
+    const angle = (salt % 12) * ((Math.PI * 2) / 12);
+    return mod.CreateVector(Math.cos(angle) * 25, 0, Math.sin(angle) * 25);
 }
 
-function stopTelemetry(player: mod.Player): void {
-    // The admin player is player id 0 for non-persistent test servers,
-    // so don't do the rest of this unless it's the admin player.
-    if (mod.GetObjId(player) != 0) return;
-
-    // Clear the telemetry interval so it doesn't continue to log the admin's position and facing direction.
-    Timers.clearInterval(telemetryInterval);
-}
-
-function handlePlayerDeployed(player: mod.Player): void {
-    // Log a message to the dynamic logger that the player has deployed.
-    adminDebugTool?.dynamicLog(`Player ${mod.GetObjId(player)} deployed.`);
-
-    // Get the current map (Can be undefined if the map cannot be determined).
-    const map = MapDetector.currentMap();
-
-    if (map) {
-        mod.DisplayNotificationMessage(
-            mod.Message(mod.stringkeys.template.notifications.deployedOnMap, player, mod.stringkeys.template.maps[map]),
-            player
-        );
-    } else {
-        mod.DisplayNotificationMessage(mod.Message(mod.stringkeys.template.notifications.deployed, player), player);
+function ensureBotFloor(): void {
+    if (matchOver) return;
+    let need = backfillNeeded();
+    let guard = 0;
+    while (need > 0 && guard < 30) {
+        const ident = spawnBotIntoFreeSlot(bestSpawnPos(-1, allIdentities().length + guard));
+        if (!ident) break;
+        pendingBotIdentityIds.push(ident.id);
+        need--;
+        guard++;
     }
 }
 
-// Event subscriptions for the admin debug tool.
-Events.OnPlayerJoinGame.subscribe(createAdminDebugTool);
-Events.OnPlayerDeployed.subscribe(showTelemetry);
-Events.OnPlayerUndeploy.subscribe(stopTelemetry);
-Events.OnPlayerLeaveGame.subscribe(destroyAdminDebugTool);
+function announceAndEnd(winner: mod.Player): void {
+    if (matchOver) return;
+    matchOver = true;
+    stopLosSampler();
+    try {
+        const winnerTeam = mod.GetTeam(winner);
+        log('MATCH OVER — ladder complete');
+        Timers.setTimeout(() => {
+            try {
+                mod.EndGameMode(winnerTeam);
+            } catch {}
+        }, 4000);
+    } catch {}
+}
 
-// Event subscriptions for notifying players of their name and the current map.
-Events.OnPlayerDeployed.subscribe(handlePlayerDeployed);
+// ============================================================================
+// LIFECYCLE
+// ============================================================================
+Events.OnGameModeStarted.subscribe(() => {
+    log('========== FFA GUNMASTER START ==========');
+    matchOver = false;
+    gameStarted = true;
+    initSlots();
+    resetLadder();
+    initSpawns();
+    startLosSampler();
+
+    // Per-player FFA scoreboard: Gun # / Kills / Deaths, sorted by Gun #.
+    try {
+        mod.SetScoreboardType(mod.ScoreboardType.CustomFFA);
+        mod.SetScoreboardColumnNames(
+            mod.Message(SK().ffa.scoreboard.gun),
+            mod.Message(SK().ffa.scoreboard.kills),
+            mod.Message(SK().ffa.scoreboard.deaths)
+        );
+        mod.SetScoreboardColumnWidths(1, 1, 1);
+        mod.SetScoreboardSorting(1, true);
+    } catch {}
+
+    // THE SPLIT: landing-team players -> their own solo slots (safe pre-deploy window).
+    const everyone: mod.Player[] = [];
+    try {
+        const arr = mod.AllPlayers();
+        const n = mod.CountOf(arr);
+        for (let i = 0; i < n; i++) everyone.push(mod.ValueInArray(arr, i) as mod.Player);
+    } catch {}
+    splitLandingTeam(everyone);
+
+    // Fill to the floor with persistent-identity bots, then deploy everyone.
+    ensureBotFloor();
+    mod.SetSpawnMode(mod.SpawnModes.AutoSpawn);
+    mod.DeployAllPlayers();
+});
+
+Events.OnPlayerJoinGame.subscribe((player: mod.Player) => {
+    if (matchOver) return;
+    try {
+        if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) return;
+    } catch {}
+    // Joiner lands on team 1 (it has room, incl. for parties). Seat on a solo
+    // slot while still undeployed; if slots are full, the least-progressed bot
+    // gives up its seat (human replaces bot — the 12-floor stays intact).
+    Timers.setTimeout(() => {
+        try {
+            if (!mod.IsPlayerValid(player)) return;
+            let teamId = assignHumanToSlot(player);
+            if (teamId === null) {
+                const sacrifice = pickReplaceableBot();
+                if (sacrifice) {
+                    despawnBot(sacrifice);
+                    teamId = assignHumanToSlot(player);
+                }
+            }
+            log(`joiner seated on solo team ${teamId ?? 'NONE (server full)'}`);
+        } catch {}
+    }, 500); // let the engine finish seating them on the landing team first
+});
+
+Events.OnPlayerDeployed.subscribe((player: mod.Player) => {
+    if (matchOver) return;
+    try {
+        const playerId = mod.GetObjId(player);
+        const isBot = mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier);
+
+        if (isBot) {
+            // Adopt this body into the oldest identity awaiting one.
+            if (identityByCurrentPlayerId(playerId) === null && pendingBotIdentityIds.length > 0) {
+                const identityId = pendingBotIdentityIds.shift() as number;
+                adoptBotPlayer(player, identityId);
+            }
+        } else {
+            // AutoSpawn placed them wherever — move to the best-scored spawn point.
+            const pos = bestSpawnPos(playerId, playerId);
+            try {
+                mod.Teleport(player, pos, 0);
+            } catch {}
+        }
+
+        // Everyone deploys with their current ladder card.
+        applyTierWeapon(player);
+        updateScoreboardFor(player);
+    } catch {}
+});
+
+Events.OnPlayerEarnedKill.subscribe((killer: mod.Player, victim: mod.Player) => {
+    if (matchOver) return;
+    try {
+        if (!mod.IsPlayerValid(killer)) return;
+        const killerId = mod.GetObjId(killer);
+        const victimId = mod.GetObjId(victim);
+        if (killerId === victimId) return; // suicide
+
+        // Stats.
+        if (mod.GetSoldierState(killer, mod.SoldierStateBool.IsAISoldier)) {
+            const ident = identityByCurrentPlayerId(killerId);
+            if (ident) ident.kills++;
+        } else {
+            statsOfHuman(killerId).kills++;
+        }
+
+        // Ladder.
+        const outcome = onLadderKill(killer);
+        if (outcome === 'promoted') {
+            applyTierWeapon(killer); // new gun on the spot, gun-game style
+        } else if (outcome === 'finished') {
+            updateScoreboardFor(killer);
+            announceAndEnd(killer);
+            return;
+        }
+        updateScoreboardFor(killer);
+    } catch {}
+});
+
+Events.OnPlayerDied.subscribe((player: mod.Player) => {
+    if (matchOver) return;
+    try {
+        const playerId = mod.GetObjId(player);
+        if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
+            const ident = identityByCurrentPlayerId(playerId);
+            if (ident) {
+                ident.deaths++;
+                ident.currentPlayerId = null;
+                // Respawn the SAME identity after a beat: same slot, same ladder spot,
+                // spawner relocated to the current best-scored position.
+                Timers.setTimeout(() => {
+                    if (matchOver) return;
+                    const still = getIdentity(ident.id);
+                    if (still) {
+                        pendingBotIdentityIds.push(still.id);
+                        respawnBot(still, bestSpawnPos(-1, still.id));
+                    }
+                }, 3000);
+            }
+        } else {
+            statsOfHuman(playerId).deaths++;
+        }
+        updateScoreboardFor(player);
+    } catch {}
+});
+
+Events.OnPlayerLeaveGame.subscribe((playerId: number) => {
+    releaseHumanSlot(playerId);
+    removeHuman(playerId);
+    humanStats.delete(playerId);
+    // Refill the floor shortly after (not instantly mid-firefight).
+    Timers.setTimeout(() => {
+        if (!matchOver) ensureBotFloor();
+    }, 2000);
+    log(`player ${playerId} left; slot freed (humans=${humanCount()}, bots=${botSlots().length})`);
+});

@@ -23,15 +23,45 @@ Built by combining two of our codebases (upgrade both as we port):
 | **UI** | Deadlock `gunfight/ui/` + Gunmaster `ui/gunmaster-ui.ts` | Ladder-progress HUD (tier X/N + current card name), kill feed, leader callouts, round results. Rebuild on Deadlock's polished components. |
 | **Round/lobby flow** | Deadlock `countdown-ui` + spectator fixes | Countdown freeze → play → winner screen. Port the spectate-filter + Deploy-transition lessons wholesale. |
 
-## FFA mechanics on a team engine (the hard part)
-- **Scoreboard:** `Modifiers → Gameplay → ScoreboardType = Default FFA` (portal page setting) + custom columns.
-- **Teams:** community-verified pitfalls — 16-teams-of-1 breaks joining. Plan A: everyone on
-  team 1 + **friendly fire ON** (portal modifier), per-player scoring in script. Plan B (if bots
-  won't attack teammates): humans team 1, bots team 2, FF ON both. ⚠ VERIFY in-game which lets
-  Deadlock's bot brain (AISetTarget cross/same team) engage everyone. The `debugSimulateTeamSorting`
-  harness pattern from Deadlock applies.
+## FFA mechanics on a team engine — THE 28-TEAM SCHEME (author's design, 2026-07-17)
+The community's 16-teams-of-1 FFA blocked human joins because NO team had room for a joining
+party. Fix: **one landing-zone team with room, everyone else on solo teams.**
+
+- **Portal page setup:** 28 teams. **Team 1 = size 4** (the landing zone — parties can seat).
+  **Teams 2–28 = size 1** (27 solo slots). 4 + 27 = 31 concurrent + rotation headroom; supports
+  the 32-actual-player goal. ⚠ VERIFY in-game: 28 teams behave (community proved 16).
+- **Match start: SPLIT TEAM 1.** Everyone the engine seated on team 1 is `SetTeam`'d onto their
+  own empty solo team BEFORE first deploy (players are undeployed at mode start — the one safe
+  `SetTeam` window per the Deadlock team-sorting findings). Team 1 then stays open as the
+  landing zone for later joiners.
+- **Mid-match joiners:** land on team 1 (it has room) → script immediately assigns a free solo
+  slot (undeployed → SetTeam → deploy via FFASpawnPoints). If the server is at the bot-backfill
+  floor, a bot is despawned to free its slot.
+- **Bots = 12-player floor.** `MIN_PLAYERS = 12`: bots fill empty solo slots so the match never
+  feels dead; each human join replaces one bot. Every bot sits on its OWN solo team → cross-team
+  hostile to everyone → the Deadlock bot brain works UNMODIFIED (no friendly-fire dependency,
+  which only matters for the brief time players share team 1).
+- **Persistent bot identities (ported from Deadlock roster):** a bot keeps its name, scoreboard
+  row, kills AND ladder position across respawns — extended with `ladderIndex` so bots visibly
+  progress through guns like players do.
+- **Scoreboard:** `mod.SetScoreboardType(ScoreboardType.CustomFFA)` (script-side — confirmed in
+  SDK) + custom columns (Gun #, Kills, Deaths); sorted by ladder position.
 - **Kill attribution:** OnPlayerEarnedKill + Deadlock's damage-contributor tracking (already fixed
   for round carry-over).
+
+## Maps & spawn system (author's design)
+Arenas = the Deadlock maps, with **32 spawn markers** placed per map. ⚠ **Map-authoring rule
+(0,0,0 bug, consensus-confirmed UNFIXED):** `GetObjectPosition` returns ~(0,0,0) for non-physical
+objects (AI Spawners, SpawnPoints, InteractPoints, WorldIcons...). The markers must be **tiny
+PHYSICAL props (spatial objects) with unique ObjIds 101–132**, sunk slightly under the terrain.
+Script reads marker positions (works for physical objects) and teleports/places at them.
+
+**Anti-spawn-kill selection** (`src/spawns.ts`): score = distance-to-nearest-enemy (capped)
+− heavy penalty per enemy within 15 m − **LOS danger** − recently-used penalty.
+LOS danger = rolling cache: one raycast per 200 ms round-robins the markers, casting
+spawn→nearest player's chest (raycast budget is ~1/tick engine-wide, so NO burst checks at
+spawn time). Clear line = a sniper lane exists → danger up; blocked = decay. Catches the
+cross-map sniper case the plain distance check misses.
 
 ## Config (top of script, Deadlock-style)
 `MAX_PLAYERS` (default 12, cap 32) · `BOT_BACKFILL` target · `KILLS_PER_TIER` (default 2) ·
