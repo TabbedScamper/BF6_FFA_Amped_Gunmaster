@@ -103,13 +103,21 @@ Shuffled subset: (base + amped, shuffled throughout) sliced to `LADDER_GUN_TIERS
 the standalone bug the author hit (respawn with only a gadget = empty hands until manual cycle).
 
 ## Build order (each step gated: tsc + build clean)
-1. **Skeleton**: config, FFA spawn wiring (FFASpawnPoints), per-player score state, win condition. ✅ scaffold done
-2. **Ladder core**: port gunmaster progression + Deadlock cards as tiers; kill → promote; HUD counter.
-3. **Bots**: Deadlock brain + anyone-targeting + ladder participation.
-4. **Amped tiers**: port UPGRADED_WEAPON_FX + amped sounds (raycast tracers, 1/tick budget).
-5. **Powerups**: promo/demo drops + pickup FX/SFX.
-6. **Polish**: UI suite, VO (per-player scoping!), spectate/transition fixes, audio leveling.
+1. ✅ **Skeleton** (slice 1): 28-team split, bot backfill w/ persistent identities, CustomFFA
+   scoreboard, win condition. Anti-spawn-kill spawn selection (distance + rolling LOS danger).
+2. ✅ **Ladder core** (slice 2): shuffled base+amped ladder + gadget finale; ForceSwitchInventory
+   respawn-gadget fix. Repo: github.com/TabbedScamper/BF6_FFA_Amped_Gunmaster.
+3. ✅ **Amped FX** (slice 3): src/amped.ts — damage-stripped UPGRADED_WEAPON_FX, amped hit sound,
+   player-safe chain-freeze (SetSoldierEffect + MovementSpeedMultiplier). Per-tick OngoingPlayer
+   detector; FX raycasts via shared Raycast module w/ cooldown. + mod-types augmentation (5 weapons).
+4. **Bots' brains**: port Deadlock bot-ai (sense-think-act) + retarget closest ANY player; bots
+   climb the ladder (kills already promote them; brain makes them actually fight).
+5. **Powerups**: promo/demo drops (FiringRange number props) + pickup FX/SFX; shiftTiers() hook ready.
+6. **Polish**: HUD (gun X/N + card name), VO (per-player scoping!), spectate/transition fixes,
+   audio leveling; add the 5 shelved weapons' amped configs if desired.
 7. **Meanwhile**: notes on every Gunmaster bug found → feeds the eventual Undead-Gunmaster overhaul.
+   Found so far: chain-freeze was AI-only (unusable on players); respawn-with-gadget = empty hands
+   (both fixed here — port the fixes back to Undead Gunmaster in its overhaul pass).
 
 ## Known-good lessons already baked in (from this month's work)
 Removed-API compat (EnableSpatialObject/EnableSFX/GetScreenEffect...), async-handler rule,
