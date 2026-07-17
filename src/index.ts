@@ -27,7 +27,7 @@ import {
     respawnBot,
     spawnBotIntoFreeSlot,
 } from './roster.ts';
-import { applyTierWeapon, ladderLength, onLadderKill, progressOf, removeHuman, resetLadder } from './ladder.ts';
+import { applyTierWeapon, ladderLength, onLadderKill, onThrowingKnifeTier, progressOf, removeHuman, resetLadder } from './ladder.ts';
 import { initSpawns, pickSpawn, startLosSampler, stopLosSampler } from './spawns.ts';
 import { cleanupAmped, clearAmpedState, initAmped, startAmpedDetector } from './amped.ts';
 import { clearBotState, startBotDirector, stopBotDirector } from './bots.ts';
@@ -53,6 +53,7 @@ let matchOver = false;
 let gameStarted = false;
 let firstBloodAwarded = false;
 const killstreaks: Map<number, number> = new Map();
+const knifeFinishing: Set<number> = new Set(); // re-entrancy guard for the knife insta-kill
 
 // Human stats (bots carry theirs on the roster identity).
 interface HumanStats {
@@ -461,4 +462,25 @@ Events.OnTimeLimitReached.subscribe(() => {
             mod.EndGameMode(mod.GetTeam(1));
         } catch {}
     }
+});
+
+// Final tier is the throwing knife, which the engine does NOT one-shot. When a
+// player on the knife tier lands ANY hit (they only carry knives), finish the
+// kill with lethal damage credited to THEM — so it instant-kills and the kill
+// feed correctly shows the thrower.
+Events.OnPlayerDamaged.subscribe((victim: mod.Player, giver: mod.Player) => {
+    if (matchOver) return;
+    try {
+        if (!mod.IsPlayerValid(giver) || !mod.IsPlayerValid(victim)) return;
+        const vid = mod.GetObjId(victim);
+        if (mod.GetObjId(giver) === vid) return; // no self-finish
+        if (!onThrowingKnifeTier(giver)) return;
+        if (knifeFinishing.has(vid)) return; // don't re-enter on our own damage
+        if (!mod.GetSoldierState(victim, mod.SoldierStateBool.IsAlive)) return;
+        knifeFinishing.add(vid);
+        mod.DealDamage(victim, 1000, giver); // insane damage -> instant kill, credited to the thrower
+        Timers.setTimeout(() => {
+            knifeFinishing.delete(vid); // clear guard (survives async re-fire)
+        }, 200);
+    } catch {}
 });

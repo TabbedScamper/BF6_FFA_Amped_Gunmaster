@@ -206,6 +206,11 @@ export function tierIsAmped(player: mod.Player): boolean {
     return currentTier(player)?.isAmped === true;
 }
 
+/** True if the player is on the final throwing-knife tier (for the insta-kill hook). */
+export function onThrowingKnifeTier(player: mod.Player): boolean {
+    return currentTier(player)?.gadget === mod.Gadgets.Throwable_Throwing_Knife;
+}
+
 /**
  * Equip the participant's current-tier card and FORCE-SWITCH to it.
  * The ForceSwitchInventory call fixes the respawn bug where a gadget/knife tier
