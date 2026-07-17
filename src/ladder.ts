@@ -78,6 +78,8 @@ const GUN_POOL: LadderTier[] = [
     // Shotguns
     { weapon: W.Shotgun_M87A1, cardName: 'THE LANDLORD', attachments: [A.Scope_Iron_Sights, A.Bottom_Full_Angled, A.Right_50_mW_Green, A.Left_Flashlight] },
     { weapon: W.Shotgun_DB_12, cardName: 'HALLWAY LAWYER', attachments: [A.Scope_Iron_Sights, A.Bottom_Full_Angled, A.Right_50_mW_Green] },
+    // Battle pickup — minigun mixes into the normal rotation (no attachments).
+    { weapon: W.BattlePickup_MP_RMG, cardName: 'MANDATORY OVERTIME', attachments: [] },
 ];
 
 // ---------------------------------------------------------------------------
@@ -114,6 +116,8 @@ const AMPED_POOL: LadderTier[] = [
 // ---------------------------------------------------------------------------
 const FINALE_TIERS: LadderTier[] = [
     { gadget: G.Launcher_Breaching_Projectile, slot: mod.InventorySlots.MiscGadget, cardName: 'EVICTION NOTICE' },
+    // Rorsch Mk 2 railgun — a brutal single-shot skill gate near the very end.
+    { weapon: W.BattlePickup_Rorsch_Mk_2_SMRW, cardName: 'TERMINATION', attachments: [] },
     { gadget: G.Throwable_Throwing_Knife, slot: mod.InventorySlots.Throwable, cardName: 'RESIGNATION LETTER' },
 ];
 
