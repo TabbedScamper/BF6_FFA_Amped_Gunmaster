@@ -23,13 +23,20 @@ Built by combining two of our codebases (upgrade both as we port):
 | **UI** | Deadlock `gunfight/ui/` + Gunmaster `ui/gunmaster-ui.ts` | Ladder-progress HUD (tier X/N + current card name), kill feed, leader callouts, round results. Rebuild on Deadlock's polished components. |
 | **Round/lobby flow** | Deadlock `countdown-ui` + spectator fixes | Countdown freeze → play → winner screen. Port the spectate-filter + Deploy-transition lessons wholesale. |
 
-## FFA mechanics on a team engine — THE 28-TEAM SCHEME (author's design, 2026-07-17)
+## FFA mechanics on a team engine — THE 29-TEAM SCHEME (author's design, 2026-07-17)
 The community's 16-teams-of-1 FFA blocked human joins because NO team had room for a joining
 party. Fix: **one landing-zone team with room, everyone else on solo teams.**
 
-- **Portal page setup:** 28 teams. **Team 1 = size 4** (the landing zone — parties can seat).
-  **Teams 2–28 = size 1** (27 solo slots). 4 + 27 = 31 concurrent + rotation headroom; supports
-  the 32-actual-player goal. ⚠ VERIFY in-game: 28 teams behave (community proved 16).
+- **Portal page setup (author's actual):** 29 teams. **Team 1 = size 4** (landing zone — a full
+  4-person private lobby / party can seat). **Teams 2–29 = size 1** (28 solo slots). Capacity =
+  4 + 28 = **32 players**. ⚠ VERIFY in-game: 29 teams behave (community proved 16).
+- **Do we need 32/33 teams?** No — 29 is enough. Team 1 is a REVOLVING DOOR: landers are split
+  onto solo slots and it empties, so its 4 slots are reused, not permanent homes. When >28 humans
+  are present the extra up-to-4 STAY on team 1 together; **Friendly Fire ON** lets them fight each
+  other (and they're already cross-team hostile to the 28 solo players). 33 teams (1 dock + 32
+  solo) would remove the FF need but risks higher-team-count engine limits — not worth it.
+- **Safe with bots:** bots exist only below the 12 floor; team-1 overflow only above 28 humans —
+  they never coincide, so no human ever shares team 1 with a bot that won't shoot it.
 - **Match start: SPLIT TEAM 1.** Everyone the engine seated on team 1 is `SetTeam`'d onto their
   own empty solo team BEFORE first deploy (players are undeployed at mode start — the one safe
   `SetTeam` window per the Deadlock team-sorting findings). Team 1 then stays open as the
