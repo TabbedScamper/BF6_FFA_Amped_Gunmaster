@@ -56,3 +56,23 @@ export const SFX_MASTER_VOLUME = 0.6;
 export function sfxVol(base: number = 1.0): number {
     return base * SFX_MASTER_VOLUME;
 }
+
+// ============================================================================
+// AMPED WEAPONS (cosmetic FX + sound, NO damage advantage — PvP-fair)
+// ============================================================================
+// FX firing uses a per-tick ammo-delta detector (no on-fired event in the SDK);
+// each FX placement raycasts via the shared Raycast module. Cooldown throttles
+// full-auto so we respect the ~1 raycast/tick budget (corpus-confirmed).
+export const AMPED_FX_COOLDOWN_MS = 120; // min gap between FX raycasts per player
+export const AMPED_HIT_SFX_AMP = 6.0; // base amplitude for the amped hit sound (routed via sfxVol)
+export const AMPED_SOUND_CUTOFF_MS = 100; // crisp cutoff to avoid sound spam
+export const AMPED_FX_RAY_RANGE = 500; // how far to look for a surface to place FX
+
+// Chain-freeze (the sniper signature) — rebuilt PLAYER-SAFE:
+// SetSoldierEffect(FreezeStatusEffect) + SetPlayerMovementSpeedMultiplier work
+// on humans AND bots (the old AI-only immobilize silently no-oped on humans).
+// A fair slow, not a stunlock; no damage.
+export const CHAIN_FREEZE_RADIUS = 6; // meters between chain hops
+export const CHAIN_FREEZE_SLOW = 0.5; // movement-speed multiplier while frosted
+export const CHAIN_FREEZE_DURATION_MS = 2000; // how long the frost/slow lasts
+export const CHAIN_FREEZE_MAX_TARGETS = 4; // cap the chain (perf + balance)
