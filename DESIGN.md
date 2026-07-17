@@ -110,14 +110,28 @@ the standalone bug the author hit (respawn with only a gadget = empty hands unti
 3. ✅ **Amped FX** (slice 3): src/amped.ts — damage-stripped UPGRADED_WEAPON_FX, amped hit sound,
    player-safe chain-freeze (SetSoldierEffect + MovementSpeedMultiplier). Per-tick OngoingPlayer
    detector; FX raycasts via shared Raycast module w/ cooldown. + mod-types augmentation (5 weapons).
-4. **Bots' brains**: port Deadlock bot-ai (sense-think-act) + retarget closest ANY player; bots
-   climb the ladder (kills already promote them; brain makes them actually fight).
-5. **Powerups**: promo/demo drops (FiringRange number props) + pickup FX/SFX; shiftTiers() hook ready.
-6. **Polish**: HUD (gun X/N + card name), VO (per-player scoping!), spectate/transition fixes,
-   audio leveling; add the 5 shelved weapons' amped configs if desired.
-7. **Meanwhile**: notes on every Gunmaster bug found → feeds the eventual Undead-Gunmaster overhaul.
-   Found so far: chain-freeze was AI-only (unusable on players); respawn-with-gadget = empty hands
-   (both fixed here — port the fixes back to Undead Gunmaster in its overhaul pass).
+4. ✅ **Bots** (slice 4): src/bots.ts — lightweight raycast-free director (native AI targets all
+   since each bot is on its own solo team; director keeps them pushing/roaming). NOT the heavy
+   Deadlock brain (raycast budget).
+5. ✅ **Powerups** (slice 5): src/powerups.ts — promo (climb N) + demo HOT POTATO (kill dumps −N on
+   victim; dying backfires −N on self). Physical markers 201-212.
+6. ✅ **HUD** (slice 6): src/hud.ts — per-player gun/tier bar + promo/demo flash banners (raw-string
+   mod.Message, no per-card keys).
+7. ✅ **Announcements + polish** (slice 7): src/announce.ts — lobby FIRST BLOOD + killstreak banners
+   (upgraded from the TDM export) with EOR rank-up SFX; bots use powerups; demotion carrier is
+   SpotTarget-highlighted so victims see who marked them.
+
+**Backport to Undead Gunmaster** (its overhaul pass): chain-freeze was AI-only (unusable on
+players → fixed with SetSoldierEffect + MovementSpeedMultiplier); respawn-with-gadget = empty
+hands (→ fixed with ForceSwitchInventory). TDM export imported at `projects/TDM` (compiles clean;
+source of the announcement UI).
+
+## Remaining before ship
+- **Map pass**: place 32 spawn markers (ObjIds 101-132) + 12 powerup markers (201-212), all
+  PHYSICAL props (0,0,0 bug). Portal page: 28 teams, team 1 size 4, teams 2-28 size 1.
+- **In-game test** (DEBUG_MODE=true = solo bot lobby + telemetry): verify the checklist above.
+- Optional: add the 5 shelved weapons' amped FX configs; VO callouts (per-player scoped); card
+  names as localized keys if non-English support is ever wanted.
 
 ## Known-good lessons already baked in (from this month's work)
 Removed-API compat (EnableSpatialObject/EnableSFX/GetScreenEffect...), async-handler rule,
