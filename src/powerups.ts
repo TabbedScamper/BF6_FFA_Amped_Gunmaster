@@ -16,13 +16,12 @@ import { Timers } from 'bf6-portal-utils/timers/index.ts';
 import {
     sfxVol,
     DEBUG_MODE,
-    POWERUP_MARKER_IDS,
-    POWERUP_SPAWN_INTERVAL_MS,
     POWERUP_MAX_CONCURRENT,
     POWERUP_PICKUP_RADIUS,
     POWERUP_LIFETIME_MS,
-    POWERUP_DEMOTION_CHANCE,
-    POWERUP_MAGNITUDE_WEIGHTS,
+    POWERUP_DROP_CHANCE,
+    POWERUP_SPAWN_COOLDOWN_MS,
+    POWERUP_DROP_TABLE,
 } from './config.ts';
 import { shiftTiers, applyTierWeapon } from './ladder.ts';
 
@@ -50,7 +49,7 @@ const SFX_PICKUP = RS.SFX_UI_Gauntlet_Beacons_BeaconPickup_OneShot2D;
 type Kind = 'promo' | 'demo';
 
 interface LivePowerup {
-    markerId: number;
+    id: number;
     kind: Kind;
     magnitude: number; // 1..3
     pos: mod.Vector;
@@ -60,9 +59,10 @@ interface LivePowerup {
     expireTimer: number;
 }
 
-const markerPositions: Map<number, mod.Vector> = new Map();
-const live: Map<number, LivePowerup> = new Map(); // markerId -> powerup
+const live: Map<number, LivePowerup> = new Map(); // id -> powerup
 const pendingDemotion: Map<number, number> = new Map(); // playerId -> loaded demotion tiers
+let nextId = 1;
+let lastDropAt = 0; // Date.now() of the last drop (global cooldown)
 
 // HUD hooks (registered by index.ts; decouples powerups from the UI module).
 export interface PowerupHud {
@@ -74,7 +74,6 @@ export function setPowerupHud(h: PowerupHud): void {
     hud = h;
 }
 
-let spawnInterval: number | null = null;
 let pickupInterval: number | null = null;
 
 function log(msg: string): void {
@@ -150,46 +149,41 @@ function playSfx(sfx: mod.RuntimeSpawn_Common, player: mod.Player, amp: number =
 // ---------------------------------------------------------------------------
 // Init / teardown
 // ---------------------------------------------------------------------------
-export function initPowerups(): number {
-    markerPositions.clear();
-    for (const id of POWERUP_MARKER_IDS) {
-        try {
-            const obj = mod.GetSpatialObject(id);
-            markerPositions.set(id, mod.GetObjectPosition(obj));
-        } catch {
-            // marker not present on this map — skip
-        }
-    }
-    log(`initialized ${markerPositions.size}/${POWERUP_MARKER_IDS.length} powerup markers`);
-    return markerPositions.size;
+export function initPowerups(): void {
+    nextId = 1;
+    lastDropAt = 0;
+    log('powerups: death-drop model (weighted rarity, no markers)');
 }
 
-function weightedMagnitude(): number {
-    const r = Math.random();
-    let acc = 0;
-    for (let i = 0; i < POWERUP_MAGNITUDE_WEIGHTS.length; i++) {
-        acc += POWERUP_MAGNITUDE_WEIGHTS[i];
-        if (r <= acc) return i + 1;
+/** Weighted pick from the drop table. */
+function pickDrop(): { kind: Kind; magnitude: number } {
+    let total = 0;
+    for (const d of POWERUP_DROP_TABLE) total += d.weight;
+    let r = Math.random() * total;
+    for (const d of POWERUP_DROP_TABLE) {
+        r -= d.weight;
+        if (r <= 0) return { kind: d.kind, magnitude: d.magnitude };
     }
-    return 1;
+    const f = POWERUP_DROP_TABLE[0];
+    return { kind: f.kind, magnitude: f.magnitude };
 }
 
-function freeMarker(): number | null {
-    const free: number[] = [];
-    for (const id of markerPositions.keys()) {
-        if (!live.has(id)) free.push(id);
-    }
-    if (free.length === 0) return null;
-    return free[Math.floor(Math.random() * free.length)];
-}
-
-function spawnOne(): void {
+/**
+ * Try to drop a powerup at a death location (Undead model): respects a global
+ * cooldown + drop chance + concurrent cap, then a weighted rarity roll.
+ */
+export function trySpawnAtDeath(pos: mod.Vector): void {
+    const now = Date.now();
     if (live.size >= POWERUP_MAX_CONCURRENT) return;
-    const markerId = freeMarker();
-    if (markerId === null) return;
-    const pos = markerPositions.get(markerId)!;
-    const kind: Kind = Math.random() < POWERUP_DEMOTION_CHANCE ? 'demo' : 'promo';
-    const magnitude = weightedMagnitude();
+    if (now - lastDropAt < POWERUP_SPAWN_COOLDOWN_MS) return;
+    if (Math.random() > POWERUP_DROP_CHANCE) return;
+    lastDropAt = now;
+    const { kind, magnitude } = pickDrop();
+    spawnAt(pos, kind, magnitude);
+}
+
+function spawnAt(pos: mod.Vector, kind: Kind, magnitude: number): void {
+    const id = nextId++;
 
     let numberObj: mod.Object | null = null;
     try {
@@ -211,13 +205,13 @@ function spawnOne(): void {
         }
     } catch {}
 
-    const expireTimer = Timers.setTimeout(() => despawn(markerId), POWERUP_LIFETIME_MS);
-    live.set(markerId, { markerId, kind, magnitude, pos, numberObj, sparksObj, spawnedAt: Date.now(), expireTimer });
-    log(`spawned ${kind} ${magnitude}x at marker ${markerId}`);
+    const expireTimer = Timers.setTimeout(() => despawn(id), POWERUP_LIFETIME_MS);
+    live.set(id, { id, kind, magnitude, pos, numberObj, sparksObj, spawnedAt: Date.now(), expireTimer });
+    log(`dropped ${kind} ${magnitude}x at death (id ${id})`);
 }
 
-function despawn(markerId: number): void {
-    const pu = live.get(markerId);
+function despawn(id: number): void {
+    const pu = live.get(id);
     if (!pu) return;
     try {
         Timers.clearTimeout(pu.expireTimer);
@@ -232,7 +226,7 @@ function despawn(markerId: number): void {
             mod.UnspawnObject(pu.sparksObj);
         } catch {}
     }
-    live.delete(markerId);
+    live.delete(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +266,7 @@ function checkPickups(): void {
             const dz = mod.ZComponentOf(pu.pos) - pz;
             if (dx * dx + dy * dy + dz * dz <= r2) {
                 applyPickup(p, pu);
-                despawn(pu.markerId);
+                despawn(pu.id);
                 break; // one pickup per player per tick
             }
         }
@@ -352,7 +346,6 @@ export function clearPowerupState(playerId: number): void {
 export function startPowerups(): void {
     stopPowerups();
     pendingDemotion.clear();
-    spawnInterval = Timers.setInterval(spawnOne, POWERUP_SPAWN_INTERVAL_MS);
     pickupInterval = Timers.setInterval(() => {
         checkPickups();
         spotCarriers();
@@ -361,13 +354,9 @@ export function startPowerups(): void {
 }
 
 export function stopPowerups(): void {
-    if (spawnInterval !== null) {
-        Timers.clearInterval(spawnInterval);
-        spawnInterval = null;
-    }
     if (pickupInterval !== null) {
         Timers.clearInterval(pickupInterval);
         pickupInterval = null;
     }
-    for (const markerId of [...live.keys()]) despawn(markerId);
+    for (const id of [...live.keys()]) despawn(id);
 }

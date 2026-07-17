@@ -40,6 +40,7 @@ import {
     stopPowerups,
     setPowerupHud,
     hasPendingDemotion,
+    trySpawnAtDeath,
 } from './powerups.ts';
 import { destroyAllHuds, destroyHud, ensureHud, flash, updateHud } from './hud.ts';
 import { activate, benchPlayer, benchedCount, clearBench, enforceBench, isBenched, peekBenched, removeBenched } from './bench.ts';
@@ -332,6 +333,10 @@ Events.OnPlayerDied.subscribe((player: mod.Player) => {
         const backfire = hasPendingDemotion(playerId);
         onDeathBackfireDemotion(player);
         killstreaks.set(playerId, 0);
+        // Weighted powerup drop at the death location (cooldown + chance inside).
+        try {
+            trySpawnAtDeath(mod.GetSoldierState(player, mod.SoldierStateVector.GetPosition));
+        } catch {}
         if (backfire > 0 && !mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
             flash(player, `DEMOTED!  −${backfire}  (died holding it)`, 'red', 2600);
         }

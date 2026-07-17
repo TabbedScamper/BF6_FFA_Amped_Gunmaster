@@ -52,9 +52,17 @@ export const REQUIRES_FRIENDLY_FIRE = false;
 // Kills needed to advance one weapon tier.
 export const KILLS_PER_TIER = 2;
 
-// How many GUN tiers (base + amped, shuffled) before the gadget finale tiers.
-// Total ladder length = LADDER_GUN_TIERS + (# of FINALE_TIERS, currently 2).
+// ▶ HOW MANY GUNS the match goes through (before the 2 gadget finale tiers).
+//   Total ladder length = LADDER_GUN_TIERS + 2. Raise for a longer match.
 export const LADDER_GUN_TIERS = 13;
+
+// ▶ ROTATION TYPE — what kind of gun progression each match uses:
+//   'shuffled' : random mix of base + amped guns (default; fresh every match)
+//   'classic'  : base guns in class order, pistols -> shotguns (skill ramp)
+//   'amped'    : amped (FX) guns favored — the flashy playlist
+//   'base'     : base guns only, shuffled (no amped FX tiers)
+export type LadderRotation = 'shuffled' | 'classic' | 'amped' | 'base';
+export const LADDER_ROTATION: LadderRotation = 'shuffled';
 
 // Demotions can never push a player below tier 0.
 // Promotion/demotion powerup magnitudes are 1/2/3 tiers (see powerups module).
@@ -115,14 +123,29 @@ export const CHAIN_FREEZE_MAX_TARGETS = 4; // cap the chain (perf + balance)
 // ============================================================================
 // POWERUPS (promotion + demotion only — no nuke/perks)
 // ============================================================================
-// Spawn at dedicated PHYSICAL marker props (0,0,0 rule) — ObjIds 201.. .
+// Drop at PLAYER DEATH LOCATIONS with a weighted rarity roll (the Undead model —
+// no map markers needed; a player's death position is a valid physical coord).
 // PROMOTION: pick up -> immediately climb N tiers (N = 1/2/3).
 // DEMOTION (hot potato): pick up -> your NEXT KILL demotes the victim N tiers;
 //   but if you DIE first, the demotion backfires onto YOU (−N tiers).
-export const POWERUP_MARKER_IDS: number[] = [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212];
-export const POWERUP_SPAWN_INTERVAL_MS = 18000; // try to spawn one this often
-export const POWERUP_MAX_CONCURRENT = 3; // cap live powerups on the map
+export const POWERUP_DROP_CHANCE = 0.1; // chance a given death drops a powerup
+export const POWERUP_SPAWN_COOLDOWN_MS = 6000; // min gap between drops (whole match)
+export const POWERUP_MAX_CONCURRENT = 4; // cap live powerups in the world
 export const POWERUP_PICKUP_RADIUS = 2.5; // meters
-export const POWERUP_LIFETIME_MS = 30000; // despawn if nobody grabs it
-export const POWERUP_DEMOTION_CHANCE = 0.4; // 40% of spawns are demotions
-export const POWERUP_MAGNITUDE_WEIGHTS = [0.6, 0.3, 0.1]; // P(1x), P(2x), P(3x)
+export const POWERUP_LIFETIME_MS = 25000; // despawn if nobody grabs it
+
+// Weighted drop table (relative weights; promotion slightly favored). Higher
+// magnitudes are rarer. Trim/retune freely.
+export interface PowerupDrop {
+    kind: 'promo' | 'demo';
+    magnitude: number;
+    weight: number;
+}
+export const POWERUP_DROP_TABLE: PowerupDrop[] = [
+    { kind: 'promo', magnitude: 1, weight: 30 },
+    { kind: 'promo', magnitude: 2, weight: 16 },
+    { kind: 'promo', magnitude: 3, weight: 7 },
+    { kind: 'demo', magnitude: 1, weight: 22 },
+    { kind: 'demo', magnitude: 2, weight: 12 },
+    { kind: 'demo', magnitude: 3, weight: 6 },
+];

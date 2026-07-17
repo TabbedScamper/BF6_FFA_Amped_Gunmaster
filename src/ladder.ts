@@ -17,7 +17,7 @@
 // their persistent roster identity (so a bot keeps its gun through respawns).
 // ============================================================================
 
-import { KILLS_PER_TIER, LADDER_GUN_TIERS, DEBUG_MODE } from './config.ts';
+import { KILLS_PER_TIER, LADDER_GUN_TIERS, LADDER_ROTATION, DEBUG_MODE } from './config.ts';
 import { identityByCurrentPlayerId } from './roster.ts';
 
 const A = mod.WeaponAttachments;
@@ -141,12 +141,33 @@ function log(msg: string): void {
     if (DEBUG_MODE) console.log(`[Ladder] ${msg}`);
 }
 
-/** Build a fresh shuffled ladder for a new match. */
+/** Build the gun list for this match per the LADDER_ROTATION toggle. */
+function buildGunList(): LadderTier[] {
+    const n = LADDER_GUN_TIERS;
+    switch (LADDER_ROTATION) {
+        case 'classic':
+            // Base guns in their listed (class) order — a deterministic skill ramp.
+            return GUN_POOL.slice(0, n);
+        case 'amped': {
+            // Amped guns favored; top up from base if the ladder is longer than the pool.
+            const amped = shuffle(AMPED_POOL);
+            if (amped.length >= n) return amped.slice(0, n);
+            return [...amped, ...shuffle(GUN_POOL).slice(0, n - amped.length)];
+        }
+        case 'base':
+            return shuffle(GUN_POOL).slice(0, n);
+        case 'shuffled':
+        default:
+            return shuffle([...GUN_POOL, ...AMPED_POOL]).slice(0, n);
+    }
+}
+
+/** Build a fresh ladder for a new match (rotation-aware). */
 export function resetLadder(): void {
     humanProgress.clear();
-    const guns = shuffle([...GUN_POOL, ...AMPED_POOL]).slice(0, LADDER_GUN_TIERS);
+    const guns = buildGunList();
     currentLadder = [...guns, ...FINALE_TIERS];
-    log(`built ladder: ${currentLadder.length} tiers (${guns.length} guns + ${FINALE_TIERS.length} finale)`);
+    log(`built ladder (${LADDER_ROTATION}): ${currentLadder.length} tiers (${guns.length} guns + ${FINALE_TIERS.length} finale)`);
 }
 
 export function ladderLength(): number {
