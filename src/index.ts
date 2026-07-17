@@ -27,7 +27,7 @@ import {
     respawnBot,
     spawnBotIntoFreeSlot,
 } from './roster.ts';
-import { applyTierWeapon, onLadderKill, progressOf, removeHuman, resetLadder } from './ladder.ts';
+import { applyTierWeapon, ladderLength, onLadderKill, progressOf, removeHuman, resetLadder } from './ladder.ts';
 import { initSpawns, pickSpawn, startLosSampler, stopLosSampler } from './spawns.ts';
 import { cleanupAmped, clearAmpedState, initAmped, startAmpedDetector } from './amped.ts';
 import { clearBotState, startBotDirector, stopBotDirector } from './bots.ts';
@@ -44,7 +44,8 @@ import {
 } from './powerups.ts';
 import { destroyAllHuds, destroyHud, ensureHud, flash, updateHud } from './hud.ts';
 import { activate, benchPlayer, benchedCount, clearBench, enforceBench, isBenched, peekBenched, removeBenched } from './bench.ts';
-import { announceFirstBlood, announceKillstreak, announceWinner, clearAnnouncements, STREAK_MILESTONES } from './announce.ts';
+import { announceFirstBlood, announceKillstreak, clearAnnouncements, STREAK_MILESTONES } from './announce.ts';
+import { showResults, clearResults, type ResultRow } from './result-ui.ts';
 
 const SK = (): mod.Any => mod.stringkeys;
 
@@ -120,7 +121,10 @@ function announceAndEnd(winner: mod.Player, byTimeLimit: boolean = false): void 
     stopPowerups();
     clearAnnouncements();
     clearBench();
-    announceWinner(winner, byTimeLimit); // lobby-wide WINNER banner
+    // Custom VICTORY/DEFEAT leaderboard screen (per-player title + shared board + VO).
+    try {
+        showResults(buildResultRows(), mod.GetObjId(winner));
+    } catch {}
     try {
         const winnerTeam = mod.GetTeam(winner);
         log(`MATCH OVER — ${byTimeLimit ? 'time limit (leader wins)' : 'ladder complete'}`);
@@ -161,6 +165,31 @@ function getLeader(): mod.Player | null {
     return best;
 }
 
+// Snapshot every ACTIVE player's standing for the end-screen leaderboard.
+function buildResultRows(): ResultRow[] {
+    const rows: ResultRow[] = [];
+    const total = ladderLength();
+    try {
+        const arr = mod.AllPlayers();
+        const n = mod.CountOf(arr);
+        for (let i = 0; i < n; i++) {
+            const p = mod.ValueInArray(arr, i) as mod.Player;
+            try {
+                if (!mod.IsPlayerValid(p)) continue;
+                const pid = mod.GetObjId(p);
+                if (isBenched(pid)) continue;
+                const isBot = mod.GetSoldierState(p, mod.SoldierStateBool.IsAISoldier);
+                const gun = (progressOf(p)?.ladderIndex ?? 0) + 1;
+                const kills = isBot ? (identityByCurrentPlayerId(pid)?.kills ?? 0) : statsOfHuman(pid).kills;
+                const deaths = isBot ? (identityByCurrentPlayerId(pid)?.deaths ?? 0) : statsOfHuman(pid).deaths;
+                rows.push({ player: p, gun, total, kills, deaths });
+            } catch {}
+        }
+    } catch {}
+    rows.sort((a, b) => b.gun - a.gun || b.kills - a.kills);
+    return rows;
+}
+
 // ============================================================================
 // LIFECYCLE
 // ============================================================================
@@ -170,6 +199,7 @@ Events.OnGameModeStarted.subscribe(() => {
     gameStarted = true;
     firstBloodAwarded = false;
     killstreaks.clear();
+    clearResults();
     initSlots();
     resetLadder();
     initSpawns();
