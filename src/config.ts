@@ -30,6 +30,10 @@ export const MAX_PLAYERS = 27;
 // Kills needed to advance one weapon tier.
 export const KILLS_PER_TIER = 2;
 
+// How many GUN tiers (base + amped, shuffled) before the gadget finale tiers.
+// Total ladder length = LADDER_GUN_TIERS + (# of FINALE_TIERS, currently 2).
+export const LADDER_GUN_TIERS = 13;
+
 // Demotions can never push a player below tier 0.
 // Promotion/demotion powerup magnitudes are 1/2/3 tiers (see powerups module).
 

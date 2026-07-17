@@ -1,30 +1,33 @@
 // ============================================================================
 // FFA GUNMASTER — SPAWN SELECTION (anti-spawn-kill)
 // ============================================================================
-// The arenas are the Deadlock maps with 32 uniquely-ID'd spawn markers placed
-// as spatial objects (SPAWN_SPATIAL_IDS). A spawn is picked by SCORE:
+// Arenas = the Deadlock maps with 32 uniquely-ID'd spawn markers placed as
+// PHYSICAL spatial props (0,0,0 bug: GetObjectPosition returns ~0,0,0 on
+// spawners/non-physical objects — consensus-unfixed; markers must be physical).
+// A spawn is picked by SCORE:
 //
-//   score = distance-to-nearest-enemy term   (math, computed at pick time)
-//         - LOS danger                        (rolling raycast cache, see below)
+//   score = distance-to-nearest-enemy term   (math, at pick time)
+//         - LOS danger                        (rolling raycast cache, below)
 //         - recently-used penalty             (LRU — don't reuse hot spawns)
 //
 // LINE-OF-SIGHT: a sniper across the map can see a spawn without being near it.
-// Raycasts are ~1/tick engine-wide (Discord-confirmed), so we CANNOT burst-
-// check 32 spawns at pick time. Instead a background sampler round-robins ONE
-// raycast per interval: spawn[i] -> nearest alive player's chest. A CLEAR line
-// (OnRayCastMissed) means players can see that spawn => danger bumps; a HIT
-// (wall in between) decays it. At pick time danger is just a cached number.
-//
-// NOTE: this module owns the global RayCast(start, stop) result events. When
-// the bot-LOS system lands (DESIGN step 3) both must share one dispatch queue.
+// Community-confirmed raycast rules (Discord, corpus): RayCast is async with no
+// ray id, FIFO-matched; naive per-tick casts are costly + hard to attribute; the
+// pattern is per-PLAYER attribution + a shared FIFO queue + cap in-flight +
+// distance-scale. So we do NOT hand-roll raw casts here — we go through the
+// bf6-portal-utils `Raycast` module (per-player queue + onHit/onMiss
+// attribution), the SAME queue the amped-weapon FX will use. One sampler cast
+// per LOS_SAMPLE_MS round-robins the markers: marker -> nearest player's chest.
+// onMiss (clear line) => a sight-lane exists => danger up; onHit (blocked) =>
+// decay. At pick time danger is just a cached number (zero spawn-time casts).
 // ============================================================================
 
-import { Events } from 'bf6-portal-utils/events/index.ts';
 import { Timers } from 'bf6-portal-utils/timers/index.ts';
+import { Raycast } from 'bf6-portal-utils/raycast/index.ts';
 import { DEBUG_MODE } from './config.ts';
 
-// The 32 spawn markers placed in the Godot map (unique spatial ObjIds).
-// Author's map pass will finalize these ids; 101..132 is the working plan.
+// The 32 spawn markers placed in the Godot map (unique PHYSICAL spatial ObjIds).
+// Author's map pass finalizes these; 101..132 is the working plan.
 export const SPAWN_SPATIAL_IDS: number[] = [
     101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
     117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132,
@@ -39,7 +42,7 @@ const DANGER_MAX = 8; // cache ceiling
 const DANGER_DECAY = 0.5; // subtracted per sample when the line is blocked
 const RECENT_USE_PENALTY = 40; // discourage the just-used spawn
 const RECENT_USE_MS = 8000;
-const LOS_SAMPLE_MS = 200; // one raycast per sample (respects the 1/tick budget)
+const LOS_SAMPLE_MS = 200; // one cast per sample (well within budget; shares the queue)
 const CHEST_OFFSET_Y = 1.4; // aim rays chest-height
 
 interface SpawnPoint {
@@ -49,16 +52,22 @@ interface SpawnPoint {
     lastUsedAt: number; // Date.now() of last spawn here
 }
 
+interface AlivePlayer {
+    player: mod.Player;
+    x: number;
+    y: number;
+    z: number;
+}
+
 const points: SpawnPoint[] = [];
 let sampleIndex = 0;
 let samplerInterval: number | null = null;
-let pendingSampleIndex: number | null = null; // the spawn awaiting a raycast result
 
 function log(msg: string): void {
     if (DEBUG_MODE) console.log(`[Spawns] ${msg}`);
 }
 
-/** Read marker positions once (spatial objects — GetObjectPosition works on these). */
+/** Read marker positions once (physical spatial objects report real coords). */
 export function initSpawns(): number {
     points.length = 0;
     for (const id of SPAWN_SPATIAL_IDS) {
@@ -78,8 +87,8 @@ export function spawnCount(): number {
     return points.length;
 }
 
-function alivePlayers(excludeId: number): Array<{ pos: mod.Vector; x: number; y: number; z: number }> {
-    const out: Array<{ pos: mod.Vector; x: number; y: number; z: number }> = [];
+function alivePlayers(excludeId: number): AlivePlayer[] {
+    const out: AlivePlayer[] = [];
     try {
         const arr = mod.AllPlayers();
         const n = mod.CountOf(arr);
@@ -90,7 +99,7 @@ function alivePlayers(excludeId: number): Array<{ pos: mod.Vector; x: number; y:
                 if (mod.GetObjId(p) === excludeId) continue;
                 if (!mod.GetSoldierState(p, mod.SoldierStateBool.IsAlive)) continue;
                 const pos = mod.GetSoldierState(p, mod.SoldierStateVector.GetPosition);
-                out.push({ pos, x: mod.XComponentOf(pos), y: mod.YComponentOf(pos), z: mod.ZComponentOf(pos) });
+                out.push({ player: p, x: mod.XComponentOf(pos), y: mod.YComponentOf(pos), z: mod.ZComponentOf(pos) });
             } catch {}
         }
     } catch {}
@@ -98,34 +107,43 @@ function alivePlayers(excludeId: number): Array<{ pos: mod.Vector; x: number; y:
 }
 
 // ---------------------------------------------------------------------------
-// Rolling LOS sampler: one raycast per LOS_SAMPLE_MS from spawn[i] to the
-// nearest alive player's chest. Clear line => danger up; blocked => decay.
+// Rolling LOS sampler: one cast per LOS_SAMPLE_MS from spawn[i] to the nearest
+// alive player's chest, via the shared Raycast module (per-player FIFO queue).
+// The result closure captures its own spawn point, so multiple in-flight casts
+// attribute correctly — no single-outstanding-cast assumption.
 // ---------------------------------------------------------------------------
 export function startLosSampler(): void {
     if (samplerInterval !== null) return;
     samplerInterval = Timers.setInterval(() => {
         try {
-            if (points.length === 0 || pendingSampleIndex !== null) return;
-            const idx = sampleIndex % points.length;
+            if (points.length === 0) return;
+            const sp = points[sampleIndex % points.length];
             sampleIndex++;
-            const sp = points[idx];
             const others = alivePlayers(-1);
             if (others.length === 0) return;
-            // nearest player to this spawn (the most likely watcher)
+
             const sx = mod.XComponentOf(sp.pos), sy = mod.YComponentOf(sp.pos), sz = mod.ZComponentOf(sp.pos);
             let best = others[0], bd = Infinity;
             for (const o of others) {
                 const d = (o.x - sx) * (o.x - sx) + (o.y - sy) * (o.y - sy) + (o.z - sz) * (o.z - sz);
                 if (d < bd) { bd = d; best = o; }
             }
-            pendingSampleIndex = idx;
-            mod.RayCast(
+
+            // Attribute the cast to the watcher; capture `sp` in the callbacks.
+            Raycast.cast(
+                best.player,
                 mod.CreateVector(sx, sy + CHEST_OFFSET_Y, sz),
-                mod.CreateVector(best.x, best.y + CHEST_OFFSET_Y, best.z)
+                mod.CreateVector(best.x, best.y + CHEST_OFFSET_Y, best.z),
+                {
+                    onHit: () => {
+                        sp.danger = Math.max(0, sp.danger - DANGER_DECAY); // blocked -> safer
+                    },
+                    onMiss: () => {
+                        sp.danger = Math.min(DANGER_MAX, sp.danger + 1); // clear sight-lane -> hotter
+                    },
+                }
             );
-        } catch {
-            pendingSampleIndex = null;
-        }
+        } catch {}
     }, LOS_SAMPLE_MS);
 }
 
@@ -134,26 +152,7 @@ export function stopLosSampler(): void {
         Timers.clearInterval(samplerInterval);
         samplerInterval = null;
     }
-    pendingSampleIndex = null;
 }
-
-// Result attribution: we only ever have ONE outstanding cast.
-Events.OnRayCastHit.subscribe(() => {
-    // Something between spawn and watcher: line blocked -> decay danger.
-    if (pendingSampleIndex !== null && points[pendingSampleIndex]) {
-        const sp = points[pendingSampleIndex];
-        sp.danger = Math.max(0, sp.danger - DANGER_DECAY);
-    }
-    pendingSampleIndex = null;
-});
-Events.OnRayCastMissed.subscribe(() => {
-    // Clear line: the nearest player can SEE this spawn -> danger up.
-    if (pendingSampleIndex !== null && points[pendingSampleIndex]) {
-        const sp = points[pendingSampleIndex];
-        sp.danger = Math.min(DANGER_MAX, sp.danger + 1);
-    }
-    pendingSampleIndex = null;
-});
 
 // ---------------------------------------------------------------------------
 // Pick the best spawn for a player (or a bot identity's respawn).
