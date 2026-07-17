@@ -37,9 +37,12 @@ const SPAWN_BURST = RS.FX_BASE_Sparks_Pulse_L; // one-shot on spawn (as in Undea
 const SMOKE_FX = RS.FX_Smoke_Marker_Custom;
 const PROMO_COLOR = mod.CreateVector(0.1, 0.5, 1); // BLUE = promotion
 const DEMO_COLOR = mod.CreateVector(1, 0.15, 0.15); // RED = demotion
-const SPIN_TICK_MS = 60; // spin cadence (matches Undead's 0.05s SetObjectTransform loop)
-const SPIN_STEP = 0.05; // radians added per tick (tumble)
-const SMOKE_RESPAWN_TICKS = 20; // re-puff the colored smoke ~every 1.2s (marker FX fades)
+// Spin via the ENGINE (MoveObjectOverTime + shouldLoop): one call, no per-tick
+// script, no SetObjectTransform buffer-drift (corpus: the "Library for Multiple
+// Object Operations" thread — OverTime functions are "set it and forget it").
+const SPIN_PERIOD_S = 2.5; // one full revolution every 2.5s, looped by the engine
+const SPIN_FULL = mod.CreateVector(0, Math.PI * 2, 0); // yaw rotation delta per period
+const SMOKE_PUFF_MS = 1200; // re-puff the colored smoke (marker FX fades)
 const SFX_PROMO = RS.SFX_UI_Notification_Primary_D_2D;
 const SFX_DEMO_LOADED = RS.SFX_UI_MainMenu_PressPlay_OneShot2D;
 const SFX_PICKUP = RS.SFX_UI_Gauntlet_Beacons_BeaconPickup_OneShot2D;
@@ -54,8 +57,6 @@ interface LivePowerup {
     numberObj: mod.Object | null;
     spawnedAt: number;
     expireTimer: number;
-    yaw: number; // current spin angle
-    smokeCounter: number; // ticks since last colored-smoke puff
 }
 
 const markerPositions: Map<number, mod.Vector> = new Map();
@@ -74,7 +75,7 @@ export function setPowerupHud(h: PowerupHud): void {
 
 let spawnInterval: number | null = null;
 let pickupInterval: number | null = null;
-let spinInterval: number | null = null;
+let smokeInterval: number | null = null;
 
 function log(msg: string): void {
     if (DEBUG_MODE) console.log(`[Powerups] ${msg}`);
@@ -149,27 +150,8 @@ function puffSmoke(pu: LivePowerup): void {
     } catch {}
 }
 
-function spinTick(): void {
-    for (const pu of live.values()) {
-        // Tumble the number prop (Undead's multi-axis SetObjectTransform spin).
-        if (pu.numberObj) {
-            pu.yaw += SPIN_STEP;
-            if (pu.yaw > Math.PI * 2) pu.yaw -= Math.PI * 2;
-            const r = pu.yaw;
-            try {
-                mod.SetObjectTransform(
-                    pu.numberObj,
-                    mod.CreateTransform(mod.Add(pu.pos, mod.CreateVector(0, 0.5, 0)), mod.CreateVector(r, r * 0.7, r * 0.3))
-                );
-            } catch {}
-        }
-        // Re-puff the colored smoke so the promo/demo color persists.
-        pu.smokeCounter++;
-        if (pu.smokeCounter >= SMOKE_RESPAWN_TICKS) {
-            pu.smokeCounter = 0;
-            puffSmoke(pu);
-        }
-    }
+function smokeTick(): void {
+    for (const pu of live.values()) puffSmoke(pu);
 }
 
 // A pooled one-shot sound: spawn, play to player, unspawn shortly after.
@@ -235,6 +217,10 @@ function spawnOne(): void {
     let numberObj: mod.Object | null = null;
     try {
         numberObj = mod.SpawnObject(NUMBER_PROP[magnitude - 1], mod.Add(pos, mod.CreateVector(0, 0.5, 0)), ZERO);
+        if (numberObj) {
+            // Engine-driven infinite spin (one call; loops server-side).
+            mod.MoveObjectOverTime(numberObj, ZERO, SPIN_FULL, SPIN_PERIOD_S, true, false);
+        }
     } catch {}
     // Spawn burst (one-shot), as in the Undead mode.
     try {
@@ -250,7 +236,7 @@ function spawnOne(): void {
     } catch {}
 
     const expireTimer = Timers.setTimeout(() => despawn(markerId), POWERUP_LIFETIME_MS);
-    const pu: LivePowerup = { markerId, kind, magnitude, pos, numberObj, spawnedAt: Date.now(), expireTimer, yaw: 0, smokeCounter: SMOKE_RESPAWN_TICKS };
+    const pu: LivePowerup = { markerId, kind, magnitude, pos, numberObj, spawnedAt: Date.now(), expireTimer };
     live.set(markerId, pu);
     puffSmoke(pu); // initial colored aura
     log(`spawned ${kind} ${magnitude}x at marker ${markerId}`);
@@ -392,7 +378,7 @@ export function startPowerups(): void {
         checkPickups();
         spotCarriers();
     }, 250);
-    spinInterval = Timers.setInterval(spinTick, SPIN_TICK_MS);
+    smokeInterval = Timers.setInterval(smokeTick, SMOKE_PUFF_MS);
     log('powerup system started');
 }
 
@@ -405,9 +391,9 @@ export function stopPowerups(): void {
         Timers.clearInterval(pickupInterval);
         pickupInterval = null;
     }
-    if (spinInterval !== null) {
-        Timers.clearInterval(spinInterval);
-        spinInterval = null;
+    if (smokeInterval !== null) {
+        Timers.clearInterval(smokeInterval);
+        smokeInterval = null;
     }
     for (const markerId of [...live.keys()]) despawn(markerId);
 }
