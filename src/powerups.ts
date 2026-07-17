@@ -29,12 +29,13 @@ import { shiftTiers, applyTierWeapon } from './ladder.ts';
 const RS = mod.RuntimeSpawn_Common;
 const ZERO = mod.CreateVector(0, 0, 0);
 
-// Number props (magnitude) spin; a colored smoke aura marks promo vs demo.
-// Technique lifted from the Undead mode: FX_Smoke_Marker_Custom + SetVFXColor
-// (same base FX, tinted) — the SDK has no blue marker FX in RuntimeSpawn_Common.
+// Powerup visual = a spinning NUMBER prop + a persistent SPARKS FX, exactly as
+// the Undead mode did (NOT smoke — smoke was only for the removed perks):
+//   promotion -> FX_RepairTool_Sparks_1P,  demotion -> FX_RepairTool_Sparks_Damage.
+// We also SetVFXColor them to guarantee the requested BLUE (promo) / RED (demo).
 const NUMBER_PROP = [RS.FiringRange_NumberOne_01, RS.FiringRange_NumberTwo_01, RS.FiringRange_NumberThree_01];
-const SPAWN_BURST = RS.FX_BASE_Sparks_Pulse_L; // one-shot on spawn (as in Undead)
-const SMOKE_FX = RS.FX_Smoke_Marker_Custom;
+const PROMO_SPARKS = RS.FX_RepairTool_Sparks_1P;
+const DEMO_SPARKS = RS.FX_RepairTool_Sparks_Damage;
 const PROMO_COLOR = mod.CreateVector(0.1, 0.5, 1); // BLUE = promotion
 const DEMO_COLOR = mod.CreateVector(1, 0.15, 0.15); // RED = demotion
 // Spin via the ENGINE (MoveObjectOverTime + shouldLoop): one call, no per-tick
@@ -42,7 +43,6 @@ const DEMO_COLOR = mod.CreateVector(1, 0.15, 0.15); // RED = demotion
 // Object Operations" thread — OverTime functions are "set it and forget it").
 const SPIN_PERIOD_S = 2.5; // one full revolution every 2.5s, looped by the engine
 const SPIN_FULL = mod.CreateVector(0, Math.PI * 2, 0); // yaw rotation delta per period
-const SMOKE_PUFF_MS = 1200; // re-puff the colored smoke (marker FX fades)
 const SFX_PROMO = RS.SFX_UI_Notification_Primary_D_2D;
 const SFX_DEMO_LOADED = RS.SFX_UI_MainMenu_PressPlay_OneShot2D;
 const SFX_PICKUP = RS.SFX_UI_Gauntlet_Beacons_BeaconPickup_OneShot2D;
@@ -55,6 +55,7 @@ interface LivePowerup {
     magnitude: number; // 1..3
     pos: mod.Vector;
     numberObj: mod.Object | null;
+    sparksObj: mod.Object | null;
     spawnedAt: number;
     expireTimer: number;
 }
@@ -75,7 +76,6 @@ export function setPowerupHud(h: PowerupHud): void {
 
 let spawnInterval: number | null = null;
 let pickupInterval: number | null = null;
-let smokeInterval: number | null = null;
 
 function log(msg: string): void {
     if (DEBUG_MODE) console.log(`[Powerups] ${msg}`);
@@ -129,29 +129,6 @@ export function nearestPowerupPos(from: mod.Vector, maxRange: number): mod.Vecto
         } catch {}
     }
     return best;
-}
-
-/** Spin every live powerup's number prop. SetObjectTransform is the runtime mover
- * that "generally works" (corpus: MoveObject is flaky); kept at a modest cadence
- * to avoid the SetObjectTransform buffer-drift bug reported on fast loops. */
-function puffSmoke(pu: LivePowerup): void {
-    try {
-        const smokePos = mod.Add(pu.pos, mod.CreateVector(0, 1.0, 0));
-        const smoke = mod.SpawnObject(SMOKE_FX, smokePos, ZERO, mod.CreateVector(0.5, 0.5, 0.5)) as mod.VFX;
-        if (smoke) {
-            mod.SetVFXColor(smoke, pu.kind === 'promo' ? PROMO_COLOR : DEMO_COLOR);
-            mod.EnableVFX(smoke, true);
-            Timers.setTimeout(() => {
-                try {
-                    mod.UnspawnObject(smoke as unknown as mod.Object);
-                } catch {}
-            }, 2000);
-        }
-    } catch {}
-}
-
-function smokeTick(): void {
-    for (const pu of live.values()) puffSmoke(pu);
 }
 
 // A pooled one-shot sound: spawn, play to player, unspawn shortly after.
@@ -222,23 +199,20 @@ function spawnOne(): void {
             mod.MoveObjectOverTime(numberObj, ZERO, SPIN_FULL, SPIN_PERIOD_S, true, false);
         }
     } catch {}
-    // Spawn burst (one-shot), as in the Undead mode.
+    // Persistent sparks FX (promo vs demo), tinted to guarantee blue/red.
+    let sparksObj: mod.Object | null = null;
     try {
-        const burst = mod.SpawnObject(SPAWN_BURST, pos, ZERO, mod.CreateVector(1, 1, 1)) as mod.VFX;
-        if (burst) {
-            mod.EnableVFX(burst, true);
-            Timers.setTimeout(() => {
-                try {
-                    mod.UnspawnObject(burst as unknown as mod.Object);
-                } catch {}
-            }, 3000);
+        sparksObj = mod.SpawnObject(kind === 'promo' ? PROMO_SPARKS : DEMO_SPARKS, pos, ZERO, mod.CreateVector(1, 1, 1));
+        if (sparksObj) {
+            try {
+                mod.SetVFXColor(sparksObj as mod.VFX, kind === 'promo' ? PROMO_COLOR : DEMO_COLOR);
+            } catch {}
+            mod.EnableVFX(sparksObj as mod.VFX, true);
         }
     } catch {}
 
     const expireTimer = Timers.setTimeout(() => despawn(markerId), POWERUP_LIFETIME_MS);
-    const pu: LivePowerup = { markerId, kind, magnitude, pos, numberObj, spawnedAt: Date.now(), expireTimer };
-    live.set(markerId, pu);
-    puffSmoke(pu); // initial colored aura
+    live.set(markerId, { markerId, kind, magnitude, pos, numberObj, sparksObj, spawnedAt: Date.now(), expireTimer });
     log(`spawned ${kind} ${magnitude}x at marker ${markerId}`);
 }
 
@@ -251,6 +225,11 @@ function despawn(markerId: number): void {
     if (pu.numberObj) {
         try {
             mod.UnspawnObject(pu.numberObj);
+        } catch {}
+    }
+    if (pu.sparksObj) {
+        try {
+            mod.UnspawnObject(pu.sparksObj);
         } catch {}
     }
     live.delete(markerId);
@@ -378,7 +357,6 @@ export function startPowerups(): void {
         checkPickups();
         spotCarriers();
     }, 250);
-    smokeInterval = Timers.setInterval(smokeTick, SMOKE_PUFF_MS);
     log('powerup system started');
 }
 
@@ -390,10 +368,6 @@ export function stopPowerups(): void {
     if (pickupInterval !== null) {
         Timers.clearInterval(pickupInterval);
         pickupInterval = null;
-    }
-    if (smokeInterval !== null) {
-        Timers.clearInterval(smokeInterval);
-        smokeInterval = null;
     }
     for (const markerId of [...live.keys()]) despawn(markerId);
 }
