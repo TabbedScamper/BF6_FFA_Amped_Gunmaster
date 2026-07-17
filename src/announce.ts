@@ -139,6 +139,16 @@ export function announceKillstreak(player: mod.Player, count: number): void {
     } catch {}
 }
 
+/** Lobby-wide WINNER banner (ladder finished, or leader at the time limit). */
+export function announceWinner(winner: mod.Player, byTimeLimit: boolean): void {
+    try {
+        const title = mod.Message(byTimeLimit ? 'TIME! WINNER' : 'WINNER');
+        showBanner(title as mod.Any, mod.Message(winner) as mod.Any, GOLD, 8000);
+        playGlobal(RS.SFX_UI_Scorelog_AccoladeCareerBest_OneShot2D, 9);
+        log('winner announced');
+    } catch {}
+}
+
 export function clearAnnouncements(): void {
     clearBanner();
 }

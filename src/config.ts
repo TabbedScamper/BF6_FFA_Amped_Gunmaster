@@ -35,6 +35,14 @@ export const MIN_PLAYERS = 12;
 // Max ACTIVE players (= number of solo teams). Extras are benched as spectators.
 export const MAX_PLAYERS = 31;
 
+// Brief invuln on (re)spawn so you don't die the instant you appear in a 31-player
+// FFA. Full damage-immunity for a short window (via SetPlayerIncomingDamageFactor).
+export const SPAWN_PROTECTION_MS = 1500;
+
+// The match ends when someone FINISHES the ladder. If the portal page also sets a
+// TIME LIMIT, OnTimeLimitReached ends it and the current LEADER (highest gun, then
+// most kills) wins — so a stalemate can never hang the match.
+
 // No friendly fire needed — every active player is on their own solo team.
 export const REQUIRES_FRIENDLY_FIRE = false;
 

@@ -14,7 +14,7 @@
 import { Events } from 'bf6-portal-utils/events/index.ts';
 import { Timers } from 'bf6-portal-utils/timers/index.ts';
 
-import { DEBUG_MODE } from './config.ts';
+import { DEBUG_MODE, SPAWN_PROTECTION_MS } from './config.ts';
 import { initSlots, splitLandingTeam, assignHumanToSlot, releaseHumanSlot, humanCount, botSlots } from './teams.ts';
 import {
     adoptBotPlayer,
@@ -43,7 +43,7 @@ import {
 } from './powerups.ts';
 import { destroyAllHuds, destroyHud, ensureHud, flash, updateHud } from './hud.ts';
 import { activate, benchPlayer, benchedCount, clearBench, enforceBench, isBenched, peekBenched, removeBenched } from './bench.ts';
-import { announceFirstBlood, announceKillstreak, clearAnnouncements, STREAK_MILESTONES } from './announce.ts';
+import { announceFirstBlood, announceKillstreak, announceWinner, clearAnnouncements, STREAK_MILESTONES } from './announce.ts';
 
 const SK = (): mod.Any => mod.stringkeys;
 
@@ -110,25 +110,54 @@ function ensureBotFloor(): void {
     }
 }
 
-function announceAndEnd(winner: mod.Player): void {
+function announceAndEnd(winner: mod.Player, byTimeLimit: boolean = false): void {
     if (matchOver) return;
     matchOver = true;
     stopLosSampler();
     cleanupAmped();
     stopBotDirector();
     stopPowerups();
-    destroyAllHuds();
     clearAnnouncements();
     clearBench();
+    announceWinner(winner, byTimeLimit); // lobby-wide WINNER banner
     try {
         const winnerTeam = mod.GetTeam(winner);
-        log('MATCH OVER — ladder complete');
+        log(`MATCH OVER — ${byTimeLimit ? 'time limit (leader wins)' : 'ladder complete'}`);
         Timers.setTimeout(() => {
+            destroyAllHuds();
             try {
                 mod.EndGameMode(winnerTeam);
             } catch {}
-        }, 4000);
+        }, 6000);
     } catch {}
+}
+
+// Current leader among ACTIVE players: highest gun tier, tie-broken by kills.
+function getLeader(): mod.Player | null {
+    let best: mod.Player | null = null;
+    let bestIdx = -1;
+    let bestKills = -1;
+    try {
+        const arr = mod.AllPlayers();
+        const n = mod.CountOf(arr);
+        for (let i = 0; i < n; i++) {
+            const p = mod.ValueInArray(arr, i) as mod.Player;
+            try {
+                if (!mod.IsPlayerValid(p)) continue;
+                const pid = mod.GetObjId(p);
+                if (isBenched(pid)) continue;
+                const idx = progressOf(p)?.ladderIndex ?? 0;
+                const isBot = mod.GetSoldierState(p, mod.SoldierStateBool.IsAISoldier);
+                const kills = isBot ? (identityByCurrentPlayerId(pid)?.kills ?? 0) : statsOfHuman(pid).kills;
+                if (idx > bestIdx || (idx === bestIdx && kills > bestKills)) {
+                    best = p;
+                    bestIdx = idx;
+                    bestKills = kills;
+                }
+            } catch {}
+        }
+    } catch {}
+    return best;
 }
 
 // ============================================================================
@@ -229,6 +258,15 @@ Events.OnPlayerDeployed.subscribe((player: mod.Player) => {
             const pos = bestSpawnPos(playerId, playerId);
             try {
                 mod.Teleport(player, pos, 0);
+            } catch {}
+            // Brief spawn protection so you don't die the instant you appear.
+            try {
+                mod.SetPlayerIncomingDamageFactor(player, 0);
+                Timers.setTimeout(() => {
+                    try {
+                        if (mod.IsPlayerValid(player)) mod.SetPlayerIncomingDamageFactor(player, 1);
+                    } catch {}
+                }, SPAWN_PROTECTION_MS);
             } catch {}
         }
 
@@ -374,3 +412,18 @@ function resolvePlayerById(playerId: number): mod.Player | null {
     } catch {}
     return null;
 }
+
+// Time limit reached (portal page setting) -> the current LEADER wins, so a
+// stalemate (nobody finishes the ladder) can never hang the match.
+Events.OnTimeLimitReached.subscribe(() => {
+    if (matchOver) return;
+    const leader = getLeader();
+    if (leader) {
+        announceAndEnd(leader, true);
+    } else {
+        matchOver = true;
+        try {
+            mod.EndGameMode(mod.GetTeam(1));
+        } catch {}
+    }
+});
