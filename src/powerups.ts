@@ -54,6 +54,16 @@ const markerPositions: Map<number, mod.Vector> = new Map();
 const live: Map<number, LivePowerup> = new Map(); // markerId -> powerup
 const pendingDemotion: Map<number, number> = new Map(); // playerId -> loaded demotion tiers
 
+// HUD hooks (registered by index.ts; decouples powerups from the UI module).
+export interface PowerupHud {
+    flash(player: mod.Player, text: string, color: 'green' | 'red' | 'gold' | 'white', ms?: number): void;
+    refresh(player: mod.Player): void;
+}
+let hud: PowerupHud | null = null;
+export function setPowerupHud(h: PowerupHud): void {
+    hud = h;
+}
+
 let spawnInterval: number | null = null;
 let pickupInterval: number | null = null;
 
@@ -210,12 +220,16 @@ function applyPickup(player: mod.Player, pu: LivePowerup): void {
             const newIdx = shiftTiers(player, pu.magnitude);
             applyTierWeapon(player); // give the better gun right now
             playSfx(SFX_PROMO, player, 1.5);
+            hud?.flash(player, `PROMOTED  +${pu.magnitude}`, 'green');
+            hud?.refresh(player);
             log(`PROMO ${pu.magnitude}x -> tier ${newIdx}`);
         } else {
             const playerId = mod.GetObjId(player);
             pendingDemotion.set(playerId, (pendingDemotion.get(playerId) ?? 0) + pu.magnitude);
             playSfx(SFX_DEMO_LOADED, player, 1.5);
-            log(`DEMO ${pu.magnitude}x LOADED onto ${playerId} (pending ${pendingDemotion.get(playerId)})`);
+            const total = pendingDemotion.get(playerId) ?? pu.magnitude;
+            hud?.flash(player, `DEMOTION LOADED  −${total}  ·  GET A KILL!`, 'red', 2600);
+            log(`DEMO ${pu.magnitude}x LOADED onto ${playerId} (pending ${total})`);
         }
     } catch {}
 }
@@ -233,6 +247,7 @@ export function onKillOffloadDemotion(killer: mod.Player, victim: mod.Player): v
         pendingDemotion.delete(killerId);
         const newIdx = shiftTiers(victim, -n); // applies on the victim's respawn
         playSfx(SFX_DEMO_LOADED, killer, 1.5);
+        hud?.flash(killer, `DUMPED IT!  −${n} ON THEM`, 'green');
         log(`offload: victim demoted ${n} -> tier ${newIdx}`);
     } catch {}
 }

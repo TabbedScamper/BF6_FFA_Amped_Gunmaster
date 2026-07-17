@@ -38,7 +38,10 @@ import {
     onKillOffloadDemotion,
     startPowerups,
     stopPowerups,
+    setPowerupHud,
+    hasPendingDemotion,
 } from './powerups.ts';
+import { destroyAllHuds, destroyHud, ensureHud, flash, updateHud } from './hud.ts';
 
 const SK = (): mod.Any => mod.stringkeys;
 
@@ -110,6 +113,7 @@ function announceAndEnd(winner: mod.Player): void {
     cleanupAmped();
     stopBotDirector();
     stopPowerups();
+    destroyAllHuds();
     try {
         const winnerTeam = mod.GetTeam(winner);
         log('MATCH OVER — ladder complete');
@@ -137,6 +141,7 @@ Events.OnGameModeStarted.subscribe(() => {
     startBotDirector();
     initPowerups();
     startPowerups();
+    setPowerupHud({ flash, refresh: updateHud });
 
     // Per-player FFA scoreboard: Gun # / Kills / Deaths, sorted by Gun #.
     try {
@@ -212,6 +217,10 @@ Events.OnPlayerDeployed.subscribe((player: mod.Player) => {
         // Everyone deploys with their current ladder card.
         applyTierWeapon(player);
         updateScoreboardFor(player);
+        if (!isBot) {
+            ensureHud(player);
+            updateHud(player);
+        }
     } catch {}
 });
 
@@ -238,8 +247,11 @@ Events.OnPlayerEarnedKill.subscribe((killer: mod.Player, victim: mod.Player) => 
         const outcome = onLadderKill(killer);
         if (outcome === 'promoted') {
             applyTierWeapon(killer); // new gun on the spot, gun-game style
+            flash(killer, 'PROMOTED!', 'green');
+            updateHud(killer);
         } else if (outcome === 'finished') {
             updateScoreboardFor(killer);
+            flash(killer, 'WINNER!', 'gold', 5000);
             announceAndEnd(killer);
             return;
         }
@@ -252,7 +264,11 @@ Events.OnPlayerDied.subscribe((player: mod.Player) => {
     try {
         const playerId = mod.GetObjId(player);
         // Hot-potato backfire: died still holding a demotion charge -> demote self.
+        const backfire = hasPendingDemotion(playerId);
         onDeathBackfireDemotion(player);
+        if (backfire > 0 && !mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
+            flash(player, `DEMOTED!  −${backfire}  (died holding it)`, 'red', 2600);
+        }
         if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
             const ident = identityByCurrentPlayerId(playerId);
             if (ident) {
@@ -282,6 +298,7 @@ Events.OnPlayerLeaveGame.subscribe((playerId: number) => {
     clearAmpedState(playerId);
     clearBotState(playerId);
     clearPowerupState(playerId);
+    destroyHud(playerId);
     humanStats.delete(playerId);
     // Refill the floor shortly after (not instantly mid-firefight).
     Timers.setTimeout(() => {
