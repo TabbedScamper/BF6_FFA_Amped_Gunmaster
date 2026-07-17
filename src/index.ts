@@ -42,6 +42,7 @@ import {
     hasPendingDemotion,
 } from './powerups.ts';
 import { destroyAllHuds, destroyHud, ensureHud, flash, updateHud } from './hud.ts';
+import { activate, benchPlayer, benchedCount, clearBench, enforceBench, isBenched, peekBenched, removeBenched } from './bench.ts';
 import { announceFirstBlood, announceKillstreak, clearAnnouncements, STREAK_MILESTONES } from './announce.ts';
 
 const SK = (): mod.Any => mod.stringkeys;
@@ -118,6 +119,7 @@ function announceAndEnd(winner: mod.Player): void {
     stopPowerups();
     destroyAllHuds();
     clearAnnouncements();
+    clearBench();
     try {
         const winnerTeam = mod.GetTeam(winner);
         log('MATCH OVER — ladder complete');
@@ -196,7 +198,12 @@ Events.OnPlayerJoinGame.subscribe((player: mod.Player) => {
                     teamId = assignHumanToSlot(player);
                 }
             }
-            log(`joiner seated on solo team ${teamId ?? 'NONE (server full)'}`);
+            if (teamId === null) {
+                // All 32 solo slots are human-held -> bench as a spectator.
+                benchPlayer(player);
+            } else {
+                log(`joiner seated on solo team ${teamId}`);
+            }
         } catch {}
     }, 500); // let the engine finish seating them on the landing team first
 });
@@ -204,6 +211,10 @@ Events.OnPlayerJoinGame.subscribe((player: mod.Player) => {
 Events.OnPlayerDeployed.subscribe((player: mod.Player) => {
     if (matchOver) return;
     try {
+        // Safety net: a benched player who slipped a deploy (spawn-on-friendly) is
+        // instantly undeployed before we do anything else.
+        if (enforceBench(player)) return;
+
         const playerId = mod.GetObjId(player);
         const isBot = mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier);
 
@@ -310,16 +321,56 @@ Events.OnPlayerDied.subscribe((player: mod.Player) => {
 });
 
 Events.OnPlayerLeaveGame.subscribe((playerId: number) => {
-    releaseHumanSlot(playerId);
+    const wasBenched = isBenched(playerId);
+    const freedSoloTeam = releaseHumanSlot(playerId); // non-null if they held a solo slot
     removeHuman(playerId);
+    removeBenched(playerId);
     clearAmpedState(playerId);
     clearBotState(playerId);
     clearPowerupState(playerId);
     destroyHud(playerId);
     humanStats.delete(playerId);
+
+    // An ACTIVE player leaving freed a solo slot -> promote the oldest benched.
+    if (!matchOver && !wasBenched && freedSoloTeam !== null && benchedCount() > 0) {
+        promoteBenched();
+    }
+
     // Refill the floor shortly after (not instantly mid-firefight).
     Timers.setTimeout(() => {
         if (!matchOver) ensureBotFloor();
     }, 2000);
-    log(`player ${playerId} left; slot freed (humans=${humanCount()}, bots=${botSlots().length})`);
+    log(`player ${playerId} left (humans=${humanCount()}, bots=${botSlots().length}, benched=${benchedCount()})`);
 });
+
+// Move the oldest benched player into a free solo slot and deploy them.
+function promoteBenched(): void {
+    const id = peekBenched();
+    if (id === null) return;
+    const player = resolvePlayerById(id);
+    if (!player) {
+        removeBenched(id);
+        return;
+    }
+    const teamId = assignHumanToSlot(player); // SetTeam onto the freed solo slot (undeployed = safe)
+    if (teamId === null) return; // no slot after all — leave benched
+    activate(player); // remove from bench + EnablePlayerDeploy(true)
+    try {
+        mod.DeployPlayer(player); // OnPlayerDeployed wires ladder/HUD/spawn
+    } catch {}
+    log(`promoted benched ${id} -> solo team ${teamId}`);
+}
+
+function resolvePlayerById(playerId: number): mod.Player | null {
+    try {
+        const arr = mod.AllPlayers();
+        const n = mod.CountOf(arr);
+        for (let i = 0; i < n; i++) {
+            const p = mod.ValueInArray(arr, i) as mod.Player;
+            try {
+                if (mod.IsPlayerValid(p) && mod.GetObjId(p) === playerId) return p;
+            } catch {}
+        }
+    } catch {}
+    return null;
+}

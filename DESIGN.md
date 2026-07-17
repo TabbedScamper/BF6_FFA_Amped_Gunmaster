@@ -23,20 +23,28 @@ Built by combining two of our codebases (upgrade both as we port):
 | **UI** | Deadlock `gunfight/ui/` + Gunmaster `ui/gunmaster-ui.ts` | Ladder-progress HUD (tier X/N + current card name), kill feed, leader callouts, round results. Rebuild on Deadlock's polished components. |
 | **Round/lobby flow** | Deadlock `countdown-ui` + spectator fixes | Countdown freeze → play → winner screen. Port the spectate-filter + Deploy-transition lessons wholesale. |
 
-## FFA mechanics on a team engine — THE 29-TEAM SCHEME (author's design, 2026-07-17)
+## FFA mechanics on a team engine — THE 33-TEAM SCHEME (author's design, 2026-07-17)
 The community's 16-teams-of-1 FFA blocked human joins because NO team had room for a joining
-party. Fix: **one landing-zone team with room, everyone else on solo teams.**
+party. Fix: **one gate team with room, every active player on their own solo team, overflow
+benched as spectators.**
 
-- **Portal page setup (author's actual):** 29 teams. **Team 1 = size 4** (landing zone — a full
-  4-person private lobby / party can seat). **Teams 2–29 = size 1** (28 solo slots). Capacity =
-  4 + 28 = **32 players**. ⚠ VERIFY in-game: 29 teams behave (community proved 16).
-- **Do we need 32/33 teams?** No — 29 is enough. Team 1 is a REVOLVING DOOR: landers are split
-  onto solo slots and it empties, so its 4 slots are reused, not permanent homes. When >28 humans
-  are present the extra up-to-4 STAY on team 1 together; **Friendly Fire ON** lets them fight each
-  other (and they're already cross-team hostile to the 28 solo players). 33 teams (1 dock + 32
-  solo) would remove the FF need but risks higher-team-count engine limits — not worth it.
-- **Safe with bots:** bots exist only below the 12 floor; team-1 overflow only above 28 humans —
-  they never coincide, so no human ever shares team 1 with a bot that won't shoot it.
+- **Portal page setup (final):** 33 teams. **Team 1 = size 4** (the GATE: landing dock + bench).
+  **Teams 2–33 = size 1** (32 solo slots = the 32 ACTIVE players). Team capacity = 4 + 32 = **36**
+  (the max lobby). ⚠ VERIFY in-game: 33 teams behave + a 36-player lobby is settable.
+- **No friendly fire needed:** every active player is on their OWN solo team (all cross-team
+  hostile). This is why we went 33 over 29 — the 29-team version needed FF for the top 4.
+- **Over-capacity bench (`src/bench.ts`, proven pattern = deluca's S&D):** joiners 33..36 have no
+  free solo slot → benched on team 1 via `EnablePlayerDeploy(false)` + `SetSpectatingFiltersForPlayer
+  (All, false, false)` (spectate anyone). When an active player leaves, the oldest benched player is
+  promoted into the freed solo slot (`assignHumanToSlot` while undeployed = safe SetTeam) +
+  `EnablePlayerDeploy(true)` + `DeployPlayer`. The 37th join is blocked naturally by team capacity
+  (all 36 slots full) and auto-frees on leave — we do NOT use the one-way `DisablePlayerJoin`.
+- **Spectator SAFETY NET (author's catch):** a spectator can "spawn on a friendly they're
+  spectating", and benched players all share team 1 → one could sneak a deploy onto another.
+  `enforceBench(player)` runs first in `OnPlayerDeployed` and instantly `UndeployPlayer`s anyone
+  benched who slips through (Deadlock's force-undeploy pattern).
+- **Safe with bots:** bots exist only below the 12 floor; benching only above 32 humans — they
+  never coincide.
 - **Match start: SPLIT TEAM 1.** Everyone the engine seated on team 1 is `SetTeam`'d onto their
   own empty solo team BEFORE first deploy (players are undeployed at mode start — the one safe
   `SetTeam` window per the Deadlock team-sorting findings). Team 1 then stays open as the

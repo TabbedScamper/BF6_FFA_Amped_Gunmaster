@@ -1,41 +1,41 @@
 // ============================================================================
 // FFA GUNMASTER — CONFIGURATION
 // ============================================================================
-// The 29-team FFA scheme (see DESIGN.md). Portal page:
-//   - TEAM 1 = size 4 (the LANDING ZONE where the engine seats joiners/parties).
-//   - Teams 2..29 = size 1 => 28 SOLO slots.
-//   - Total capacity = 4 + 28 = 32 players.
+// The 33-team FFA scheme (see DESIGN.md). Portal page:
+//   - TEAM 1 = size 4 (the GATE: where the engine seats joiners/parties, and
+//     where over-capacity players are BENCHED as spectators).
+//   - Teams 2..33 = size 1 => 32 SOLO slots (the 32 ACTIVE players).
+//   - Total team capacity = 4 + 32 = 36 (the max lobby).
 //
-// How the 4 landing slots + 28 solo slots reach 32 (the subtlety):
-//   Team 1 is normally a REVOLVING DOOR — landers get SetTeam'd onto their own
-//   solo slot (pre-deploy = the safe SetTeam window), so team 1 empties and
-//   everyone is cross-team hostile (clean FFA, no friendly-fire dependency).
-//   BUT if all 28 solo slots are taken (i.e. > 28 humans present), the extra
-//   up-to-4 joiners STAY on team 1 together. For those few to fight each other
-//   (same team), FRIENDLY FIRE must be ON in the portal settings.
-//   => 29 teams supports the full 32. You do NOT need 32 or 33 teams.
-//
-// Why this is safe with bots: bots only exist below the MIN_PLAYERS floor
-// (< 12 humans), and team-1 overflow only happens above 28 humans — the two
-// never coincide, so a human never shares team 1 with a bot that won't shoot it.
+// Flow: a joiner lands on team 1, then gets SetTeam'd onto a free solo slot
+// (pre-deploy = the safe SetTeam window) and plays — so every ACTIVE player is
+// on their OWN team => clean FFA, NO friendly-fire dependency.
+//   - Up to 32 active (the 32 solo teams).
+//   - Joiners 33..36: no free solo slot => BENCHED on team 1 via
+//     EnablePlayerDeploy(false) + spectate-anyone; promoted to a solo slot the
+//     moment an active player leaves (proven pattern — deluca's S&D).
+//   - The 37th join is blocked naturally by team capacity (all 36 slots full);
+//     it auto-frees when someone leaves (we do NOT use the irreversible
+//     DisablePlayerJoin).
+// Bots (backfill to MIN_PLAYERS) only exist below 12 humans; benching only above
+// 32 — never coincide.
 // ============================================================================
 
-// The landing-zone team (portal page: size 4 so a full 4-party can seat, then split).
+// The gate team (portal page: size 4 — landing dock + bench for the overflow 4).
 export const LANDING_TEAM_ID = 1;
 
-// Solo slots: teams FIRST..LAST inclusive (portal page: size 1 each). 2..29 = 28 slots.
+// Solo slots: teams FIRST..LAST inclusive (portal page: size 1 each). 2..33 = 32 slots.
 export const FIRST_SOLO_TEAM_ID = 2;
-export const LAST_SOLO_TEAM_ID = 29;
+export const LAST_SOLO_TEAM_ID = 33;
 
 // Minimum bodies in the match at all times — bots fill up to this, humans replace bots.
 export const MIN_PLAYERS = 12;
 
-// Hard cap of simultaneous participants (28 solo homes + up to 4 sharing team 1).
+// Max ACTIVE players (= number of solo teams). Extras are benched as spectators.
 export const MAX_PLAYERS = 32;
 
-// REQUIRED portal setting when the lobby can exceed 28 humans: Friendly Fire ON
-// (so the <=4 who share team 1 in the overflow case can damage each other).
-export const REQUIRES_FRIENDLY_FIRE = true;
+// No friendly fire needed — every active player is on their own solo team.
+export const REQUIRES_FRIENDLY_FIRE = false;
 
 // ============================================================================
 // LADDER
