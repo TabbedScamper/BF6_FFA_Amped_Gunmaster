@@ -87,6 +87,11 @@ export function spawnCount(): number {
     return points.length;
 }
 
+/** Marker positions (for the bot director's roam targets). */
+export function spawnMarkerPositions(): mod.Vector[] {
+    return points.map((p) => p.pos);
+}
+
 function alivePlayers(excludeId: number): AlivePlayer[] {
     const out: AlivePlayer[] = [];
     try {

@@ -30,6 +30,7 @@ import {
 import { applyTierWeapon, onLadderKill, progressOf, removeHuman, resetLadder } from './ladder.ts';
 import { initSpawns, pickSpawn, startLosSampler, stopLosSampler } from './spawns.ts';
 import { cleanupAmped, clearAmpedState, initAmped, startAmpedDetector } from './amped.ts';
+import { clearBotState, startBotDirector, stopBotDirector } from './bots.ts';
 
 const SK = (): mod.Any => mod.stringkeys;
 
@@ -99,6 +100,7 @@ function announceAndEnd(winner: mod.Player): void {
     matchOver = true;
     stopLosSampler();
     cleanupAmped();
+    stopBotDirector();
     try {
         const winnerTeam = mod.GetTeam(winner);
         log('MATCH OVER — ladder complete');
@@ -123,6 +125,7 @@ Events.OnGameModeStarted.subscribe(() => {
     startLosSampler();
     initAmped();
     startAmpedDetector();
+    startBotDirector();
 
     // Per-player FFA scoreboard: Gun # / Kills / Deaths, sorted by Gun #.
     try {
@@ -261,6 +264,7 @@ Events.OnPlayerLeaveGame.subscribe((playerId: number) => {
     releaseHumanSlot(playerId);
     removeHuman(playerId);
     clearAmpedState(playerId);
+    clearBotState(playerId);
     humanStats.delete(playerId);
     // Refill the floor shortly after (not instantly mid-firefight).
     Timers.setTimeout(() => {
