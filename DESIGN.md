@@ -68,6 +68,40 @@ cross-map sniper case the plain distance check misses.
 `LADDER_LENGTH` (default 15 tiers: 10 cards → 3 amped → pistol → final) · `SFX_MASTER_VOLUME` ·
 `DEBUG_MODE` (solo bot-lobby + telemetry).
 
+## Amped weapons (author's clarification, 2026-07-17)
+Amped = **cosmetic prestige tier, NO damage advantage** (the old Undead amped guns gave bonus
+damage/instakills — stripped for PvP fairness). Keep: the custom hit-FX, the amped hit-sounds,
+and the attachments. 20 base guns have amped versions (M45A1, P18, M44, GGH-22, PW5A3, KV9, SGX,
+M4A1, AK-205, SOR-300SC, M433, AK4D, L110, M60, M2010, SV-98, Mini Scout, M1014, M87A1, DB-12).
+Amped versions are **shuffled throughout** the ladder (not grouped at the top).
+
+**Amped FX firing:** SDK 1.3.3.0 still has NO on-fired event → keep the old per-tick ammo-delta
+detector in `OngoingPlayer` (detect mag decrease → raycast per shot → spawn FX at hit point).
+Strip from each config: `explosionDamage`, `dotDamage`, `doubleDamageFirstHit`, and the
+`rayKill`/`hitPointKill` instant-`mod.Kill` calls. Keep the FX spawns + `playAmpedHitSound`.
+
+**CHAIN-FREEZE — solved for players.** Old code used AI-only immobilize (`AIEnableTargeting/
+Shooting`, `AISetMoveSpeed`, `AIMoveToBehavior`) — silently no-ops on humans. Rebuild with the
+player-facing pair: `SetSoldierEffect(p, SoldierEffects.FreezeStatusEffect, true)` (frost visual,
+works on humans+bots) + `SetPlayerMovementSpeedMultiplier(p, 0.5)` (a fair ~50% slow, NOT a
+stunlock), chained to nearby enemies for ~2s, then released (effect off + multiplier 1.0). No
+damage (per no-damage rule).
+
+## Raycast performance (corpus-backed — user asked, confirmed)
+RayCast is **async, no ray id, FIFO-matched** via `OnRayCastHit`/`OnRayCastMissed`. Community
+pattern: **per-player attribution + shared FIFO queue + cap in-flight + distance-scale frequency**;
+`OngoingPlayer` is the main cost center — throttle per-player raycasts. ~1 raycast/tick is the
+community soft limit; no official tick budget. Frostbite dump shows `MaxNumberOfAsyncRaycastsPerFrame`
+= 50 (engine crowd-placement cap, not necessarily Portal). ⇒ **Everything raycast goes through the
+bf6-portal-utils `Raycast` module** (one native handler, per-player queue, onHit/onMiss). Spawn LOS
+sampler already refactored onto it (slice 2); amped-FX per-shot casts will use the same module.
+
+## Ladder structure (settled 2026-07-17)
+Shuffled subset: (base + amped, shuffled throughout) sliced to `LADDER_GUN_TIERS` (13), then the
+**gadget finale** appended (always last, hardest): breach-charge launcher → throwing knife. The
+`ForceSwitchInventory` fix makes gadget/knife tiers actually equip on (re)spawn — this also fixes
+the standalone bug the author hit (respawn with only a gadget = empty hands until manual cycle).
+
 ## Build order (each step gated: tsc + build clean)
 1. **Skeleton**: config, FFA spawn wiring (FFASpawnPoints), per-player score state, win condition. ✅ scaffold done
 2. **Ladder core**: port gunmaster progression + Deadlock cards as tiers; kill → promote; HUD counter.

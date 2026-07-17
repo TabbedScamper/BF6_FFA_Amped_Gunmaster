@@ -41,19 +41,20 @@ export interface LadderTier {
 // CZ3A1, VZ-61.
 // ---------------------------------------------------------------------------
 const GUN_POOL: LadderTier[] = [
-    // TODO(new weapons): VCR-2, CZ3A1 (SMG), M121 A2 (LMG), GRT CPS (DMR), VZ-61 exist
-    // in SDK 1.3.3.0 types but NOT in the bf6-portal-mod-types npm package both projects
-    // compile against. Add these 5 tiers once mod-types catches up (or we sync SDK types).
+    // The 5 newest SDK weapons (VCR-2, CZ3A1, M121 A2, GRT CPS, VZ-61) are typed via
+    // src/sdk-augment.d.ts (bf6-portal-mod-types npm pkg lags the installed SDK 1.3.3.0).
     // Pistols
     { weapon: W.Sidearm_P18, cardName: 'GLITTER PEN', attachments: [A.Scope_R_MR_100x, A.Muzzle_CQB_Suppressor, A.Barrel_39_Pencil, A.Magazine_17rnd_Fast_Mag] },
     { weapon: W.Sidearm_M44, cardName: 'HIGH NOON', attachments: [A.Scope_Iron_Sights, A.Barrel_675_Factory, A.Ammo_Match_Grade] },
     { weapon: W.Sidearm_M45A1, cardName: 'THE ACCOUNTANT', attachments: [A.Scope_R_MR_100x, A.Muzzle_Single_port_Brake, A.Barrel_5_Pencil, A.Magazine_11rnd_Magazine] },
     { weapon: W.Sidearm_ES_57, cardName: 'STAPLE GUN', attachments: [A.Scope_RO_S_125x, A.Muzzle_CQB_Suppressor, A.Barrel_122mm_Pencil] },
     { weapon: W.Sidearm_GGH_22, cardName: 'LUNCH MONEY', attachments: [A.Scope_R_MR_100x, A.Muzzle_CQB_Suppressor, A.Barrel_114mm_Pencil] },
+    { weapon: W.Sidearm_VZ_61, cardName: 'PAPER JAM', attachments: [A.Scope_Iron_Sights] },
     // SMGs
     { weapon: W.SMG_KV9, cardName: 'SEWING MACHINE', attachments: [A.Scope_Aperture_Sight, A.Right_50_mW_Green, A.Muzzle_CQB_Suppressor, A.Barrel_55_Fluted, A.Bottom_Canted_Stubby, A.Magazine_17rnd_Fast_Mag] },
     { weapon: W.SMG_UMG_40, cardName: 'OFFICE MEMO', attachments: [A.Scope_Aperture_Sight, A.Right_50_mW_Green, A.Muzzle_CQB_Suppressor, A.Barrel_200mm_Fluted, A.Bottom_Canted_Stubby, A.Magazine_25rnd_Fast_Mag] },
     { weapon: W.SMG_SGX, cardName: 'VENDING MACHINE', attachments: [A.Scope_Aperture_Sight, A.Muzzle_CQB_Suppressor, A.Barrel_6_Fluted, A.Magazine_30rnd_Fast_Mag] },
+    { weapon: W.SMG_CZ3A1, cardName: 'GROUP CHAT', attachments: [A.Scope_Iron_Sights, A.Muzzle_CQB_Suppressor] },
     // Carbines
     { weapon: W.Carbine_M4A1, cardName: 'STANDARD ISSUE', attachments: [A.Scope_R_MR_100x, A.Muzzle_Linear_Comp, A.Barrel_145_Carbine, A.Magazine_20rnd_Fast_Mag, A.Bottom_Low_Profile_Stubby, A.Top_5_mW_Green] },
     { weapon: W.Carbine_M277, cardName: 'PAPERWORK', attachments: [A.Scope_PVQ_31_400x, A.Muzzle_Lightened_Suppressor, A.Barrel_16_Rifle, A.Bottom_Full_Angled, A.Magazine_15rnd_Fast_Mag, A.Top_5_mW_Green] },
@@ -63,11 +64,14 @@ const GUN_POOL: LadderTier[] = [
     { weapon: W.AssaultRifle_M433, cardName: 'HR APPROVED', attachments: [A.Scope_Iron_Sights, A.Muzzle_Double_port_Brake, A.Barrel_145_Alt, A.Magazine_20rnd_Magazine, A.Ergonomic_Match_Trigger, A.Left_120_mW_Blue] },
     { weapon: W.AssaultRifle_KORD_6P67, cardName: 'SIBERIAN EXPRESS', attachments: [A.Scope_SU_123_150x, A.Muzzle_Double_port_Brake, A.Barrel_415mm_Fluted, A.Bottom_Canted_Stubby, A.Magazine_30rnd_Fast_Mag, A.Right_50_mW_Blue] },
     { weapon: W.AssaultRifle_AK4D, cardName: 'OLD RELIABLE', attachments: [A.Scope_Osa_7_100x, A.Muzzle_Compensated_Brake, A.Barrel_450mm_Standard, A.Magazine_15rnd_Fast_Mag, A.Bottom_Full_Angled] },
+    { weapon: W.AssaultRifle_VCR_2, cardName: 'FINE PRINT', attachments: [A.Scope_RO_S_125x, A.Muzzle_CQB_Suppressor] },
     // LMGs
     { weapon: W.LMG_DRS_IAR, cardName: 'SUPPRESSING OPINION', attachments: [A.Scope_RO_S_125x, A.Muzzle_Lightened_Suppressor, A.Barrel_165_LSW, A.Bottom_Canted_Stubby, A.Magazine_30rnd_Fast_Mag, A.Top_50_mW_Blue] },
     { weapon: W.LMG_M_60, cardName: 'COMPANY PICNIC', attachments: [A.Scope_RO_S_125x, A.Muzzle_Compensated_Brake, A.Barrel_17_Cut, A.Magazine_50rnd_Loose_Belt, A.Bottom_Bipod] },
+    { weapon: W.LMG_M121_A2, cardName: 'ALL HANDS EMAIL', attachments: [A.Scope_RO_S_125x, A.Bottom_Bipod] },
     // DMRs
     { weapon: W.DMR_M39_EMR, cardName: 'SCENIC ROUTE', attachments: [A.Scope_Iron_Sights, A.Muzzle_Linear_Comp, A.Barrel_22_E3_Long, A.Right_50_mW_Blue, A.Bottom_Bipod, A.Magazine_15rnd_Magazine] },
+    { weapon: W.DMR_GRT_CPS, cardName: 'COLD BREW', attachments: [A.Scope_ST_Prism_500x, A.Muzzle_Lightened_Suppressor] },
     // Snipers
     { weapon: W.Sniper_SV_98, cardName: 'WHITE FEATHER', attachments: [A.Scope_TS_HD_600x, A.Scope_Canted_Iron_Sights, A.Muzzle_Long_Suppressor, A.Barrel_650mm_Fluted, A.Right_120_mW_Blue, A.Bottom_Slim_Angled, A.Magazine_10rnd_Magazine] },
     { weapon: W.Sniper_Mini_Scout, cardName: 'POCKET PHYSICS', attachments: [A.Scope_S_VPS_600x, A.Scope_Canted_Iron_Sights, A.Muzzle_CQB_Suppressor, A.Barrel_16_Pencil, A.Right_120_mW_Blue] },
