@@ -25,11 +25,35 @@ export interface BotIdentity {
 }
 
 // Deliberately deadpan competitive-lobby names.
+// Bot names — the curated Deadlock roster (kept originals + top-active Portal
+// Hub Discord members). Shuffle-bag draw; refills when exhausted.
 const BOT_NAME_POOL: string[] = [
-    'Greg', 'The Intern', 'xX_Dave_Xx', 'Pam From HR', 'Lil Spreadsheet',
-    'Riley', 'Quarterly Report', 'Beans', 'Mortgage', 'Kevin (Real)',
-    'NPC Energy', 'Free Trial', 'Gary Numbers', 'Soup', 'Middle Manager',
-    'Toast', 'Print Preview', 'Dial-Up', 'Larry Bulletpoint', 'Unpaid Overtime',
+    // Kept from the original pool
+    'Hope',
+    'DaPa',
+    'dfanz0r',
+    'BMO',
+    'Andy6170',
+    'Boxshards',
+    // Top-active Portal Hub Discord members
+    'Ariistuujj',
+    'Lemon64k',
+    'Phiality',
+    'mikedeluca_',
+    'gala_vs',
+    'nightfyre',
+    'Guzma',
+    'muj',
+    'TonisGaming',
+    'joslick76',
+    'ty_ger07',
+    'Cyphr',
+    'Renette',
+    'Markebarca',
+    'Bennen',
+    'TabbedScamper',
+    'F4rus',
+    'defined_edits',
 ];
 
 const identities: Map<number, BotIdentity> = new Map();
