@@ -23,16 +23,18 @@ Built by combining two of our codebases (upgrade both as we port):
 | **UI** | Deadlock `gunfight/ui/` + Gunmaster `ui/gunmaster-ui.ts` | Ladder-progress HUD (tier X/N + current card name), kill feed, leader callouts, round results. Rebuild on Deadlock's polished components. |
 | **Round/lobby flow** | Deadlock `countdown-ui` + spectator fixes | Countdown freeze → play → winner screen. Port the spectate-filter + Deploy-transition lessons wholesale. |
 
-## FFA mechanics on a team engine — THE 33-TEAM SCHEME (author's design, 2026-07-17)
+## FFA mechanics on a team engine — THE 32-TEAM SCHEME (author's design, 2026-07-17)
 The community's 16-teams-of-1 FFA blocked human joins because NO team had room for a joining
 party. Fix: **one gate team with room, every active player on their own solo team, overflow
-benched as spectators.**
+benched as spectators.** (The portal site caps teams at 32, so this is the ceiling.)
 
-- **Portal page setup (final):** 33 teams. **Team 1 = size 4** (the GATE: landing dock + bench).
-  **Teams 2–33 = size 1** (32 solo slots = the 32 ACTIVE players). Team capacity = 4 + 32 = **36**
-  (the max lobby). ⚠ VERIFY in-game: 33 teams behave + a 36-player lobby is settable.
+- **Portal page setup (final):** 32 teams. **Team 1 = size 4** (the GATE: landing dock + bench).
+  **Teams 2–32 = size 1** (31 solo slots = the 31 ACTIVE players). Team capacity = 4 + 31 = **35**
+  (31 active + up to 4 benched). Set the experience's **max-players to 35**. ⚠ VERIFY in-game:
+  32 teams + a 35-player lobby behave.
 - **No friendly fire needed:** every active player is on their OWN solo team (all cross-team
-  hostile). This is why we went 33 over 29 — the 29-team version needed FF for the top 4.
+  hostile). 32 teams is the site max; if a larger lobby is ever wanted, the only lever is a bigger
+  team 1 (more bench) — active count is fixed by the 31 solo teams.
 - **Over-capacity bench (`src/bench.ts`, proven pattern = deluca's S&D):** joiners 33..36 have no
   free solo slot → benched on team 1 via `EnablePlayerDeploy(false)` + `SetSpectatingFiltersForPlayer
   (All, false, false)` (spectate anyone). When an active player leaves, the oldest benched player is

@@ -1,38 +1,39 @@
 // ============================================================================
 // FFA GUNMASTER — CONFIGURATION
 // ============================================================================
-// The 33-team FFA scheme (see DESIGN.md). Portal page:
+// The 32-team FFA scheme (portal site caps teams at 32). Portal page:
 //   - TEAM 1 = size 4 (the GATE: where the engine seats joiners/parties, and
 //     where over-capacity players are BENCHED as spectators).
-//   - Teams 2..33 = size 1 => 32 SOLO slots (the 32 ACTIVE players).
-//   - Total team capacity = 4 + 32 = 36 (the max lobby).
+//   - Teams 2..32 = size 1 => 31 SOLO slots (the 31 ACTIVE players).
+//   - Total team capacity = 4 + 31 = 35 (31 active + up to 4 benched).
 //
 // Flow: a joiner lands on team 1, then gets SetTeam'd onto a free solo slot
 // (pre-deploy = the safe SetTeam window) and plays — so every ACTIVE player is
 // on their OWN team => clean FFA, NO friendly-fire dependency.
-//   - Up to 32 active (the 32 solo teams).
-//   - Joiners 33..36: no free solo slot => BENCHED on team 1 via
+//   - Up to 31 active (the 31 solo teams).
+//   - Joiners 32..35: no free solo slot => BENCHED on team 1 via
 //     EnablePlayerDeploy(false) + spectate-anyone; promoted to a solo slot the
 //     moment an active player leaves (proven pattern — deluca's S&D).
-//   - The 37th join is blocked naturally by team capacity (all 36 slots full);
+//   - The 36th join is blocked naturally by team capacity (all 35 slots full);
 //     it auto-frees when someone leaves (we do NOT use the irreversible
 //     DisablePlayerJoin).
+// Set the experience's max-players to 35 (or whatever the site allows up to it).
 // Bots (backfill to MIN_PLAYERS) only exist below 12 humans; benching only above
-// 32 — never coincide.
+// 31 — never coincide.
 // ============================================================================
 
 // The gate team (portal page: size 4 — landing dock + bench for the overflow 4).
 export const LANDING_TEAM_ID = 1;
 
-// Solo slots: teams FIRST..LAST inclusive (portal page: size 1 each). 2..33 = 32 slots.
+// Solo slots: teams FIRST..LAST inclusive (portal page: size 1 each). 2..32 = 31 slots.
 export const FIRST_SOLO_TEAM_ID = 2;
-export const LAST_SOLO_TEAM_ID = 33;
+export const LAST_SOLO_TEAM_ID = 32;
 
 // Minimum bodies in the match at all times — bots fill up to this, humans replace bots.
 export const MIN_PLAYERS = 12;
 
 // Max ACTIVE players (= number of solo teams). Extras are benched as spectators.
-export const MAX_PLAYERS = 32;
+export const MAX_PLAYERS = 31;
 
 // No friendly fire needed — every active player is on their own solo team.
 export const REQUIRES_FRIENDLY_FIRE = false;
