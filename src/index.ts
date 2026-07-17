@@ -31,6 +31,14 @@ import { applyTierWeapon, onLadderKill, progressOf, removeHuman, resetLadder } f
 import { initSpawns, pickSpawn, startLosSampler, stopLosSampler } from './spawns.ts';
 import { cleanupAmped, clearAmpedState, initAmped, startAmpedDetector } from './amped.ts';
 import { clearBotState, startBotDirector, stopBotDirector } from './bots.ts';
+import {
+    clearPowerupState,
+    initPowerups,
+    onDeathBackfireDemotion,
+    onKillOffloadDemotion,
+    startPowerups,
+    stopPowerups,
+} from './powerups.ts';
 
 const SK = (): mod.Any => mod.stringkeys;
 
@@ -101,6 +109,7 @@ function announceAndEnd(winner: mod.Player): void {
     stopLosSampler();
     cleanupAmped();
     stopBotDirector();
+    stopPowerups();
     try {
         const winnerTeam = mod.GetTeam(winner);
         log('MATCH OVER — ladder complete');
@@ -126,6 +135,8 @@ Events.OnGameModeStarted.subscribe(() => {
     initAmped();
     startAmpedDetector();
     startBotDirector();
+    initPowerups();
+    startPowerups();
 
     // Per-player FFA scoreboard: Gun # / Kills / Deaths, sorted by Gun #.
     try {
@@ -220,6 +231,9 @@ Events.OnPlayerEarnedKill.subscribe((killer: mod.Player, victim: mod.Player) => 
             statsOfHuman(killerId).kills++;
         }
 
+        // Hot-potato: if the killer was carrying a demotion charge, dump it on the victim.
+        onKillOffloadDemotion(killer, victim);
+
         // Ladder.
         const outcome = onLadderKill(killer);
         if (outcome === 'promoted') {
@@ -237,6 +251,8 @@ Events.OnPlayerDied.subscribe((player: mod.Player) => {
     if (matchOver) return;
     try {
         const playerId = mod.GetObjId(player);
+        // Hot-potato backfire: died still holding a demotion charge -> demote self.
+        onDeathBackfireDemotion(player);
         if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) {
             const ident = identityByCurrentPlayerId(playerId);
             if (ident) {
@@ -265,6 +281,7 @@ Events.OnPlayerLeaveGame.subscribe((playerId: number) => {
     removeHuman(playerId);
     clearAmpedState(playerId);
     clearBotState(playerId);
+    clearPowerupState(playerId);
     humanStats.delete(playerId);
     // Refill the floor shortly after (not instantly mid-firefight).
     Timers.setTimeout(() => {

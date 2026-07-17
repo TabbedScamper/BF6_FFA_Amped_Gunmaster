@@ -76,3 +76,18 @@ export const CHAIN_FREEZE_RADIUS = 6; // meters between chain hops
 export const CHAIN_FREEZE_SLOW = 0.5; // movement-speed multiplier while frosted
 export const CHAIN_FREEZE_DURATION_MS = 2000; // how long the frost/slow lasts
 export const CHAIN_FREEZE_MAX_TARGETS = 4; // cap the chain (perf + balance)
+
+// ============================================================================
+// POWERUPS (promotion + demotion only — no nuke/perks)
+// ============================================================================
+// Spawn at dedicated PHYSICAL marker props (0,0,0 rule) — ObjIds 201.. .
+// PROMOTION: pick up -> immediately climb N tiers (N = 1/2/3).
+// DEMOTION (hot potato): pick up -> your NEXT KILL demotes the victim N tiers;
+//   but if you DIE first, the demotion backfires onto YOU (−N tiers).
+export const POWERUP_MARKER_IDS: number[] = [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212];
+export const POWERUP_SPAWN_INTERVAL_MS = 18000; // try to spawn one this often
+export const POWERUP_MAX_CONCURRENT = 3; // cap live powerups on the map
+export const POWERUP_PICKUP_RADIUS = 2.5; // meters
+export const POWERUP_LIFETIME_MS = 30000; // despawn if nobody grabs it
+export const POWERUP_DEMOTION_CHANCE = 0.4; // 40% of spawns are demotions
+export const POWERUP_MAGNITUDE_WEIGHTS = [0.6, 0.3, 0.1]; // P(1x), P(2x), P(3x)
