@@ -12,6 +12,7 @@ import { Timers } from 'bf6-portal-utils/timers/index.ts';
 import { UIContainer } from 'bf6-portal-utils/ui/components/container/index.ts';
 import { UIText } from 'bf6-portal-utils/ui/components/text/index.ts';
 import { sfxVol, DEBUG_MODE } from './config.ts';
+import { playerDisplayMessage } from './roster.ts';
 
 const RS = mod.RuntimeSpawn_Common;
 const SK = (): mod.Any => mod.stringkeys;
@@ -21,18 +22,37 @@ const GOLD = mod.CreateVector(1, 0.9, 0.15);
 const RED = mod.CreateVector(1, 0.35, 0.35);
 
 // Killstreak milestones -> banner word + escalating rank-up SFX.
-export const STREAK_MILESTONES = [3, 5, 7, 10];
+// FACTORS OF 2 (KILLS_PER_TIER = 2): every milestone lands exactly on a weapon-swap
+// upgrade, so a callout always coincides with a gun change. spree=4, rampage=8,
+// unstoppable=12, godlike=16.
+export const STREAK_MILESTONES = [4, 8, 12, 16];
 function streakWord(count: number): mod.Any {
-    if (count >= 10) return SK().ffa.feed.streak_word_godlike;
-    if (count >= 7) return SK().ffa.feed.streak_word_unstoppable;
-    if (count >= 5) return SK().ffa.feed.streak_word_rampage;
+    if (count >= 16) return SK().ffa.feed.streak_word_godlike;
+    if (count >= 12) return SK().ffa.feed.streak_word_unstoppable;
+    if (count >= 8) return SK().ffa.feed.streak_word_rampage;
     return SK().ffa.feed.streak_word_spree;
 }
+// Each milestone gets a DISTINCT sound. The old set were all "RankUp" jingles that blurred
+// together (and godlike collided with the winner sting). These escalate in weight — a light
+// positive ding at spree up to a heavy field-upgrade unlock at godlike — and every one is unique
+// vs first-blood (RankUp_Extra) and the winner (AccoladeCareerBest).
+// Alternate killstreak stings mixed in at random so streaks don't always sound the same.
+const STREAK_MIXINS: mod.RuntimeSpawn_Common[] = [
+    RS.SFX_UI_Gauntlet_Dogtags_OneShot2D,
+    RS.SFX_UI_Gauntlet_EOM_ReinforcementCardReveal_OneShot2D,
+];
 function streakSfx(count: number): mod.RuntimeSpawn_Common {
-    if (count >= 10) return RS.SFX_UI_Scorelog_AccoladeCareerBest_OneShot2D;
-    if (count >= 7) return RS.SFX_UI_EOR_MasteryRankUp_OneShot2D;
-    if (count >= 5) return RS.SFX_UI_EOR_RankUp_Extra_OneShot2D;
-    return RS.SFX_UI_EOR_RankUp_Normal_OneShot2D;
+    // ~1/3 of the time play one of the mix-in stings (random) instead of the tier sound.
+    if (Math.random() < 0.34) return STREAK_MIXINS[Math.floor(Math.random() * STREAK_MIXINS.length)];
+    if (count >= 16) return RS.SFX_UI_Notification_Primary_J_2D; // GODLIKE
+    if (count >= 12) return RS.SFX_UI_Notification_Primary_D_2D; // UNSTOPPABLE
+    if (count >= 8) return RS.SFX_UI_Notification_Primary_C_2D;  // RAMPAGE
+    return RS.SFX_UI_Notification_Primary_A_2D;                  // SPREE (4)
+}
+
+/** The streak word Message for a given count (for the Notification-Box callout). */
+export function streakWordMessage(count: number): mod.Message {
+    return mod.Message(streakWord(count));
 }
 const FIRST_BLOOD_SFX = RS.SFX_UI_EOR_RankUp_Extra_OneShot2D;
 
@@ -48,14 +68,14 @@ function playGlobal(sfx: mod.RuntimeSpawn_Common, amp: number): void {
     try {
         const obj = mod.SpawnObject(sfx, ZERO, ZERO) as mod.SFX;
         mod.PlaySound(obj, sfxVol(amp)); // no target = whole lobby
+        // Let the sting play to its natural end (longest of these is first-blood at ~3.4s). We ONLY
+        // clean up the spawned SFX object afterwards — no StopSound. The amped weapon is the only
+        // sound we deliberately cut short (per design); everything else plays in full.
         Timers.setTimeout(() => {
-            try {
-                mod.StopSound(obj);
-            } catch {}
             try {
                 mod.UnspawnObject(obj as unknown as mod.Object);
             } catch {}
-        }, 1500);
+        }, 5000);
     } catch {}
 }
 
@@ -74,7 +94,7 @@ function clearBanner(): void {
     }
 }
 
-function showBanner(title: mod.Any, line: mod.Any, titleColor: mod.Vector, ms: number): void {
+function showBanner(title: mod.Message, line: mod.Message, titleColor: mod.Vector, ms: number): void {
     clearBanner();
     // Global (no receiver) top-center banner.
     container = new UIContainer({
@@ -94,7 +114,7 @@ function showBanner(title: mod.Any, line: mod.Any, titleColor: mod.Vector, ms: n
         y: 0,
         width: 420,
         height: 30,
-        message: mod.Message(title),
+        message: title,
         textSize: 26,
         textColor: titleColor,
         textAlpha: 1,
@@ -108,7 +128,7 @@ function showBanner(title: mod.Any, line: mod.Any, titleColor: mod.Vector, ms: n
         y: 30,
         width: 420,
         height: 24,
-        message: mod.Message(line),
+        message: line,
         textSize: 18,
         textColor: mod.CreateVector(1, 1, 1),
         textAlpha: 1,
@@ -120,21 +140,18 @@ function showBanner(title: mod.Any, line: mod.Any, titleColor: mod.Vector, ms: n
 
 export function announceFirstBlood(killer: mod.Player): void {
     try {
-        showBanner(SK().ffa.feed.firstblood_title, mod.Message(SK().ffa.feed.firstblood_line, killer) as mod.Any, GOLD, 3500);
-        playGlobal(FIRST_BLOOD_SFX, 8);
+        showBanner(mod.Message(SK().ffa.feed.firstblood_title), playerDisplayMessage(killer), GOLD, 3500);
+        playGlobal(FIRST_BLOOD_SFX, 1); // at master level
         log('first blood');
     } catch {}
 }
 
 export function announceKillstreak(player: mod.Player, count: number): void {
     try {
-        showBanner(
-            streakWord(count),
-            mod.Message(SK().ffa.feed.streak_line, player, count) as mod.Any,
-            count >= 10 ? RED : GOLD,
-            3500
-        );
-        playGlobal(streakSfx(count), 8);
+        // NO banner: the Notification-Box callout (hud.showCallout) is the killstreak
+        // notification now. The old top-center banner rendered BEHIND that box (overlapping
+        // it). Keep only the escalating rank-up SFX.
+        playGlobal(streakSfx(count), 1); // amp 1.0 -> sits AT master level (sfxVol multiplies by master)
         log(`killstreak ${count}`);
     } catch {}
 }
@@ -142,9 +159,9 @@ export function announceKillstreak(player: mod.Player, count: number): void {
 /** Lobby-wide WINNER banner (ladder finished, or leader at the time limit). */
 export function announceWinner(winner: mod.Player, byTimeLimit: boolean): void {
     try {
-        const title = mod.Message(byTimeLimit ? 'TIME! WINNER' : 'WINNER');
-        showBanner(title as mod.Any, mod.Message(winner) as mod.Any, GOLD, 8000);
-        playGlobal(RS.SFX_UI_Scorelog_AccoladeCareerBest_OneShot2D, 9);
+        const title = mod.Message(byTimeLimit ? SK().ffa.feed.timewinner : SK().ffa.feed.winner);
+        showBanner(title, playerDisplayMessage(winner), GOLD, 8000);
+        playGlobal(RS.SFX_UI_Scorelog_AccoladeCareerBest_OneShot2D, 1); // at master level
         log('winner announced');
     } catch {}
 }

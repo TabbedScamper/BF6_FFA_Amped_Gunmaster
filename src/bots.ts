@@ -1,160 +1,129 @@
 // ============================================================================
-// FFA GUNMASTER — BOT DIRECTOR (lightweight, raycast-free)
+// FFA GUNMASTER — BOT MANAGER (Deadlock sense-think-act brain, FFA-adapted)
 // ============================================================================
-// Deadlock's full sense-think-act brain (memory + sensors + per-bot LOS
-// raycasts) would blow the raycast budget on top of the amped-FX + spawn-LOS
-// casts. We don't need it here: every bot is on its OWN solo team, so the
-// engine's native AI already treats everyone as hostile and handles target
-// acquisition + LOS-gated shooting for free.
-//
-// This director just keeps bots ACTIVE and pushing toward fights, on a cadence,
-// using pure distance math (NO raycasts):
-//   - find the nearest living OTHER soldier (ClosestPlayerTo, minus self)
-//   - AISetTarget + AIEnableShooting so they shoot when they can see them
-//   - AIValidatedMoveToBehavior toward them (corpus: AISetTarget alone doesn't
-//     move; re-issue a validated move-to on a cadence)
-//   - if nobody is near, roam to a random spawn marker so they don't idle
+// Uses the Deadlock bot AI (bot-ai/) — probabilistic LOS-gated detection,
+// AISetTarget + AIForceFire aggression (this is why they actually HIT), memory,
+// and human-feel movement. Adapted to FFA via bot-ai/ffa-deps (every other alive
+// soldier is an enemy). Two loops: the brain tick (sense-think-act) and the LOS
+// raycast round-robin (one cast/tick). Raycast results route back via the
+// OnRayCast events below.
 // ============================================================================
 
+import { Events } from 'bf6-portal-utils/events/index.ts';
 import { Timers } from 'bf6-portal-utils/timers/index.ts';
 import { DEBUG_MODE } from './config.ts';
 import { botSlots } from './teams.ts';
 import { getIdentity } from './roster.ts';
 import { spawnMarkerPositions } from './spawns.ts';
-import { nearestPowerupPos } from './powerups.ts';
+import { getBotBrain, removeBotBrainById, clearAllBotBrains } from './bot-ai/brain.ts';
+import { clearAiFlagCache } from './bot-ai/ai-flags.ts';
+import { SENSOR_CONFIG } from './bot-ai/sensors.ts';
+import { updateLos, onRayHit, onRayMiss, clearLos } from './bot-ai/los.ts';
 
-const BOT_TICK_MS = 300; // director cadence (cheap; no raycasts)
-const ENGAGE_RANGE = 60; // within this, push toward the target; else roam
-const REPATH_MOVE_MS = 900; // don't spam move-to; re-issue at most this often
+const BRAIN_TICK_MS = 200; // sense-think-act cadence
+const LOS_TICK_MS = 100; // one LOS raycast per tick (round-robin)
 
-interface BotDirectorState {
-    lastMoveAt: number;
-    roamTarget: mod.Vector | null;
-}
-const state: Map<number, BotDirectorState> = new Map();
-let directorInterval: number | null = null;
+let brainInterval: number | null = null;
+let losInterval: number | null = null;
 
 function log(msg: string): void {
     if (DEBUG_MODE) console.log(`[Bots] ${msg}`);
 }
 
-function stateOf(playerId: number): BotDirectorState {
-    let s = state.get(playerId);
-    if (!s) {
-        s = { lastMoveAt: 0, roamTarget: null };
-        state.set(playerId, s);
-    }
-    return s;
-}
-
-/** Nearest living OTHER soldier to a position (excludes the given id). Pure math. */
-function nearestOther(pos: mod.Vector, selfId: number): { player: mod.Player; dist: number } | null {
-    let best: mod.Player | null = null;
-    let bestDist = Infinity;
+/** Snapshot ALL players once into an id->player map (P11: minimize mod.* calls).
+ *  The old resolvePlayer() re-scanned mod.AllPlayers() for EVERY bot, so currentBots()
+ *  cost O(bots x players) engine calls — ~16x32 per call, run in BOTH the 5 Hz brain
+ *  loop and the 10 Hz LOS loop (~7.7k engine calls/sec just to FIND the bots). One
+ *  snapshot per tick collapses that to O(players) and a map lookup per bot. */
+function snapshotPlayers(): Map<number, mod.Player> {
+    const m: Map<number, mod.Player> = new Map();
     try {
         const arr = mod.AllPlayers();
         const n = mod.CountOf(arr);
         for (let i = 0; i < n; i++) {
             const p = mod.ValueInArray(arr, i) as mod.Player;
             try {
-                if (!mod.IsPlayerValid(p)) continue;
-                if (mod.GetObjId(p) === selfId) continue;
-                if (!mod.GetSoldierState(p, mod.SoldierStateBool.IsAlive)) continue;
-                const pp = mod.GetSoldierState(p, mod.SoldierStateVector.GetPosition);
-                const d = mod.DistanceBetween(pos, pp);
-                if (d < bestDist) { bestDist = d; best = p; }
+                if (mod.IsPlayerValid(p)) m.set(mod.GetObjId(p), p);
             } catch {}
         }
     } catch {}
-    return best ? { player: best, dist: bestDist } : null;
+    return m;
 }
 
-function pickRoam(markers: mod.Vector[], salt: number): mod.Vector | null {
-    if (markers.length === 0) return null;
-    return markers[(salt + Math.floor(Math.random() * markers.length)) % markers.length];
-}
-
-function tickBot(bot: mod.Player, markers: mod.Vector[], now: number): void {
-    try {
-        if (!mod.IsPlayerValid(bot)) return;
-        if (!mod.GetSoldierState(bot, mod.SoldierStateBool.IsAlive)) return;
-        const selfId = mod.GetObjId(bot);
-        const pos = mod.GetSoldierState(bot, mod.SoldierStateVector.GetPosition);
-        const st = stateOf(selfId);
-
-        const target = nearestOther(pos, selfId);
-        if (target && target.dist <= ENGAGE_RANGE) {
-            // Engage: aim + shoot; push toward them on a cadence.
-            try {
-                mod.AISetTarget(bot, target.player);
-                mod.AIEnableShooting(bot, true);
-            } catch {}
-            if (now - st.lastMoveAt >= REPATH_MOVE_MS) {
-                st.lastMoveAt = now;
-                st.roamTarget = null;
-                try {
-                    const tp = mod.GetSoldierState(target.player, mod.SoldierStateVector.GetPosition);
-                    mod.AISetMoveSpeed(bot, mod.MoveSpeed.Run);
-                    mod.AIValidatedMoveToBehavior(bot, tp);
-                } catch {}
-            }
-        } else {
-            // Roam toward a spawn marker to find action.
-            if (now - st.lastMoveAt >= REPATH_MOVE_MS || st.roamTarget === null) {
-                st.lastMoveAt = now;
-                // Prefer grabbing a nearby powerup; else wander a spawn marker.
-                st.roamTarget = nearestPowerupPos(pos, 45) ?? pickRoam(markers, selfId);
-                if (st.roamTarget) {
-                    try {
-                        mod.AISetMoveSpeed(bot, mod.MoveSpeed.Run);
-                        mod.AIValidatedMoveToBehavior(bot, st.roamTarget);
-                    } catch {}
-                }
-            }
-        }
-    } catch {}
-}
-
-/** Resolve the engine player currently embodying each bot identity, then tick it. */
-function tickAllBots(): void {
-    const markers = spawnMarkerPositions();
-    const now = Date.now();
+/** Live engine players currently embodying a bot identity, resolved from a
+ *  once-per-tick player snapshot (no per-bot AllPlayers rescan). */
+function currentBots(snap: Map<number, mod.Player>): mod.Player[] {
+    const out: mod.Player[] = [];
     for (const { identityId } of botSlots()) {
         const ident = getIdentity(identityId);
         if (!ident || ident.currentPlayerId === null) continue;
-        const bot = resolvePlayer(ident.currentPlayerId);
-        if (bot) tickBot(bot, markers, now);
+        const bot = snap.get(ident.currentPlayerId);
+        if (bot) out.push(bot);
+    }
+    return out;
+}
+
+function tickBrains(): void {
+    const snap = snapshotPlayers();
+    for (const bot of currentBots(snap)) {
+        try {
+            const brain = getBotBrain(bot);
+            brain.setSpawnPositionsGetter(() => spawnMarkerPositions());
+            brain.tick();
+        } catch {}
     }
 }
 
-/** Find a live mod.Player by ObjId (bots are re-adopted on deploy). */
-function resolvePlayer(playerId: number): mod.Player | null {
+function tickLos(): void {
     try {
-        const arr = mod.AllPlayers();
-        const n = mod.CountOf(arr);
-        for (let i = 0; i < n; i++) {
-            const p = mod.ValueInArray(arr, i) as mod.Player;
-            try {
-                if (mod.IsPlayerValid(p) && mod.GetObjId(p) === playerId) return p;
-            } catch {}
-        }
+        updateLos(currentBots(snapshotPlayers()), SENSOR_CONFIG.SIGHT_RANGE);
     } catch {}
-    return null;
 }
 
 export function startBotDirector(): void {
-    if (directorInterval !== null) return;
-    directorInterval = Timers.setInterval(tickAllBots, BOT_TICK_MS);
-    log('bot director started');
+    if (brainInterval === null) brainInterval = Timers.setInterval(tickBrains, BRAIN_TICK_MS);
+    if (losInterval === null) losInterval = Timers.setInterval(tickLos, LOS_TICK_MS);
+    log('bot brains started (sense-think-act + LOS)');
 }
 
 export function stopBotDirector(): void {
-    if (directorInterval !== null) {
-        Timers.clearInterval(directorInterval);
-        directorInterval = null;
+    if (brainInterval !== null) {
+        Timers.clearInterval(brainInterval);
+        brainInterval = null;
     }
+    if (losInterval !== null) {
+        Timers.clearInterval(losInterval);
+        losInterval = null;
+    }
+    clearLos();
+    clearAllBotBrains();
 }
 
-export function clearBotState(playerId: number): void {
-    state.delete(playerId);
+/** Trigger-happy retaliation: a bot that gets shot locks onto the shooter. */
+export function notifyBotDamaged(victim: mod.Player, attacker: mod.Player): void {
+    try {
+        if (!mod.GetSoldierState(victim, mod.SoldierStateBool.IsAISoldier)) return;
+        const brain = getBotBrain(victim);
+        let attackerPos: mod.Vector | undefined;
+        try {
+            attackerPos = mod.GetSoldierState(attacker, mod.SoldierStateVector.GetPosition);
+        } catch {}
+        brain.onDamaged(attacker, attackerPos);
+    } catch {}
 }
+
+/** Clean up a dead/removed bot's brain (a new one is made when it respawns).
+ *  Deletes by ID directly — the dead body is often already unresolvable, and the
+ *  old resolve-then-remove path silently leaked stale brains all match. */
+export function clearBotState(playerId: number): void {
+    removeBotBrainById(playerId);
+    clearAiFlagCache(playerId); // drop cached AIEnable*/AISetTarget state with the body
+}
+
+// Route raycast LOS-probe results back to the LOS manager.
+Events.OnRayCastHit.subscribe((bot: mod.Player, point: mod.Vector) => {
+    onRayHit(bot, point);
+});
+Events.OnRayCastMissed.subscribe((bot: mod.Player) => {
+    onRayMiss(bot);
+});

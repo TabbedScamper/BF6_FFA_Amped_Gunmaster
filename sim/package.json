@@ -1,0 +1,6 @@
+{
+    "name": "ffa-gunmaster-sim",
+    "private": true,
+    "type": "commonjs",
+    "description": "Offline modsim harness for FFA-Gunmaster (dev tooling only, never shipped)"
+}

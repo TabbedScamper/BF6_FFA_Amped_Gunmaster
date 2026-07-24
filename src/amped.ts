@@ -26,6 +26,7 @@ import {
     AMPED_FX_COOLDOWN_MS,
     AMPED_HIT_SFX_AMP,
     AMPED_SOUND_CUTOFF_MS,
+    AMPED_SOUND_VOICES,
     AMPED_FX_RAY_RANGE,
     CHAIN_FREEZE_RADIUS,
     CHAIN_FREEZE_SLOW,
@@ -46,9 +47,16 @@ const RS = mod.RuntimeSpawn_Common;
 const W = mod.Weapons;
 const ZERO = mod.CreateVector(0, 0, 0);
 
-// The amped hit sound (a single persistent SFX object, spawned once).
-const AMPED_HIT_SFX = RS.SFX_UI_Gamemode_Shared_LeadChange_Positive_OneShot2D;
-let ampedHitSfx: mod.SFX | null = null;
+// The amped hit sound — a POOL of AMPED_SOUND_VOICES persistent SFX objects so pops can OVERLAP.
+// Amped-gun "Pack-A-Punch" sound: a bassy front-loaded thump. Each bullet plays the NEXT voice in the
+// pool (round-robin); once all voices are ringing, the next bullet STEALS the oldest one. Each voice
+// self-trims after AMPED_SOUND_CUTOFF_MS so a lone shot doesn't ring the full cue.
+const AMPED_HIT_SFX = RS.SFX_UI_Gauntlet_EOM_DefeatCardReveal_OneShot2D;
+const ampedVoices: (mod.SFX | null)[] = []; // the voice pool (spawned in initAmped)
+const ampedVoiceCutoff: (number | null)[] = []; // per-voice self-trim timer id
+let ampedVoiceNext = 0; // round-robin cursor -> also points at the OLDEST voice to steal
+// Slight per-shot volume jitter so a rapid burst doesn't sound like the exact same pop repeated.
+const AMPED_AMP_JITTER = 0.15; // ±15% around AMPED_HIT_SFX_AMP
 
 function log(msg: string): void {
     if (DEBUG_MODE) console.log(`[Amped] ${msg}`);
@@ -96,14 +104,12 @@ const WEAPON_FX: Map<mod.Weapons, AmpedFxConfig> = new Map([
         explosionRadius: AMPED_RAYGUN_RADIUS,
         explosionDamage: AMPED_RAYGUN_DAMAGE,
     }],
-    // Shotguns — fire/burn: fizzle FX + a burn DOT in a small splash radius.
-    [W.Shotgun_M1014, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500, fire: true }],
+    // Shotguns — fire/burn: fizzle FX + a burn DOT (all three amped shotguns, per UGZ).
     [W.Shotgun_M87A1, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500, fire: true }],
-    [W.Shotgun_DB_12, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500, fire: true }],
-    // Snipers — chain-FROST (player-safe slow + frost visual, no damage).
-    [W.Sniper_SV_98, { fx: RS.FX_RepairTool_Sparks_1P, despawnTime: 5000, chainFreeze: true }],
-    [W.Sniper_M2010_ESR, { fx: RS.FX_RepairTool_Sparks_1P, despawnTime: 5000, chainFreeze: true }],
-    [W.Sniper_Mini_Scout, { fx: RS.FX_RepairTool_Sparks_1P, despawnTime: 5000, chainFreeze: true }],
+    [W.Shotgun_M1014, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500, fire: true }],
+    [W.Shotgun__185KS_K, { fx: RS.FX_Gadget_Sabotage_03_Fizzle, despawnTime: 2500, fire: true }],
+    // Sniper — chain-FROST (player-safe slow + frost visual). UGZ gives this to the PSR only.
+    [W.Sniper_PSR, { fx: RS.FX_RepairTool_Sparks_1P, despawnTime: 5000, chainFreeze: true }],
 ]);
 
 // --------------------------------------------------------------------------
@@ -210,22 +216,38 @@ export function initAmped(): void {
     liveFx.clear();
     frozen.clear();
     fxState.clear();
-    try {
-        ampedHitSfx = mod.SpawnObject(AMPED_HIT_SFX, ZERO, ZERO) as mod.SFX;
-    } catch {
-        ampedHitSfx = null;
+    // (Re)build the voice pool: clear any pending cutoff timers, then spawn AMPED_SOUND_VOICES objects.
+    for (const t of ampedVoiceCutoff) { if (t !== null) { try { Timers.clearTimeout(t); } catch {} } }
+    ampedVoices.length = 0;
+    ampedVoiceCutoff.length = 0;
+    ampedVoiceNext = 0;
+    for (let i = 0; i < AMPED_SOUND_VOICES; i++) {
+        try { ampedVoices.push(mod.SpawnObject(AMPED_HIT_SFX, ZERO, ZERO) as mod.SFX); }
+        catch { ampedVoices.push(null); }
+        ampedVoiceCutoff.push(null);
     }
     log('amped system initialized');
 }
 
 function playAmpedHitSound(player: mod.Player): void {
-    if (!ampedHitSfx) return;
+    if (ampedVoices.length === 0) return;
     try {
-        mod.PlaySound(ampedHitSfx, sfxVol(AMPED_HIT_SFX_AMP), player);
-        Timers.setTimeout(() => {
-            try {
-                mod.StopSound(ampedHitSfx!);
-            } catch {}
+        // Round-robin the voice pool: up to AMPED_SOUND_VOICES pops can OVERLAP. Reusing a slot STEALS
+        // it (StopSound the old pop + replay), so once every voice is ringing the next bullet kills the
+        // OLDEST. The cursor advances each shot, so it always points at the oldest voice next.
+        const i = ampedVoiceNext;
+        ampedVoiceNext = (ampedVoiceNext + 1) % ampedVoices.length;
+        const voice = ampedVoices[i];
+        if (!voice) return;
+        if (ampedVoiceCutoff[i] !== null) { try { Timers.clearTimeout(ampedVoiceCutoff[i]!); } catch {} ampedVoiceCutoff[i] = null; }
+        try { mod.StopSound(voice); } catch {} // steal: cut this slot's previous (oldest) pop if still ringing
+        // RAW amp (bypasses the 0.4 SFX master) so it's LOUD enough to cover the real gun sound, with a
+        // slight per-shot volume jitter (±AMPED_AMP_JITTER) so a burst doesn't sound repetitive.
+        const amp = AMPED_HIT_SFX_AMP * (1 - AMPED_AMP_JITTER + Math.random() * 2 * AMPED_AMP_JITTER);
+        mod.PlaySound(voice, amp, player);
+        ampedVoiceCutoff[i] = Timers.setTimeout(() => {
+            ampedVoiceCutoff[i] = null;
+            try { mod.StopSound(voice); } catch {}
         }, AMPED_SOUND_CUTOFF_MS);
     } catch {}
 }
@@ -379,24 +401,17 @@ interface FxState {
     lastWeapon: mod.Weapons | null;
     lastMag: number;
     lastFxAt: number;
+    wasFiring: boolean; // IsFiring last tick — for the trigger-pull edge (immediate first-shot pop)
 }
 const fxState: Map<number, FxState> = new Map();
 
 function stateOf(playerId: number): FxState {
     let s = fxState.get(playerId);
     if (!s) {
-        s = { lastWeapon: null, lastMag: -1, lastFxAt: 0 };
+        s = { lastWeapon: null, lastMag: -1, lastFxAt: 0, wasFiring: false };
         fxState.set(playerId, s);
     }
     return s;
-}
-
-function activeWeaponSlot(player: mod.Player): mod.InventorySlots | null {
-    try {
-        if (mod.IsInventorySlotActive(player, mod.InventorySlots.PrimaryWeapon)) return mod.InventorySlots.PrimaryWeapon;
-        if (mod.IsInventorySlotActive(player, mod.InventorySlots.SecondaryWeapon)) return mod.InventorySlots.SecondaryWeapon;
-    } catch {}
-    return null;
 }
 
 /** Called every tick per player. Detects a shot and fires amped FX if applicable. */
@@ -411,38 +426,69 @@ export function checkAmpedFx(player: mod.Player): void {
         const weapon = tier?.weapon;
         if (weapon === undefined) return;
 
-        const slot = activeWeaponSlot(player);
-        if (!slot) return;
-
+        // Ladder guns are ALWAYS granted into PrimaryWeapon (applyTierWeapon), so poll
+        // that slot directly. But ONLY while the primary is actually IN HAND: while the
+        // player holds the knife (spawn-in / intro, before the weapon grant lands) the
+        // slot is empty or mid-grant and GetInventoryAmmo reads phantom values — the
+        // tick-over-tick delta went positive and SPAMMED amped FX on amped tiers. The
+        // single held-slot probe is also the shot-detection gate (you can't fire a
+        // holstered gun), and stale lastMag from the previous life is invalidated so
+        // re-holding always re-baselines before any delta counts.
         const playerId = mod.GetObjId(player);
         const st = stateOf(playerId);
+        let holding = false;
+        try { holding = mod.IsInventorySlotActive(player, mod.InventorySlots.PrimaryWeapon); } catch {}
+        if (!holding) {
+            st.lastMag = -1;
+            st.lastWeapon = null;
+            st.wasFiring = false;
+            return;
+        }
 
         let mag: number;
         try {
-            mag = mod.GetInventoryAmmo(player, slot);
+            mag = mod.GetInventoryAmmo(player, mod.InventorySlots.PrimaryWeapon);
         } catch {
             st.lastMag = -1;
             return;
         }
 
-        // Weapon changed (promotion / respawn) — reset baseline, no shot this tick.
-        if (weapon !== st.lastWeapon) {
+        // Weapon changed (promotion / respawn) or invalidated baseline — re-baseline,
+        // no shot this tick.
+        if (weapon !== st.lastWeapon || st.lastMag < 0) {
             st.lastWeapon = weapon;
             st.lastMag = mag;
+            st.wasFiring = false;
             return;
         }
 
-        const fired = st.lastMag - mag; // rounds consumed since last tick
-        st.lastMag = mag;
-        if (fired <= 0) return;
+        // TRIGGER-PULL EDGE: play the pop the instant IsFiring goes true — this beats the ammo-delta's
+        // ~1-tick lag so the FIRST shot is immediate. IsFiring stays true on full-auto (fires once at
+        // the start); the ammo delta below then drives every bullet after.
+        let isFiring = false;
+        try { isFiring = mod.GetSoldierState(player, mod.SoldierStateBool.IsFiring); } catch {}
+        const justStarted = isFiring && !st.wasFiring;
+        st.wasFiring = isFiring;
 
-        // Throttle FX raycasts (respect the raycast budget on full-auto).
-        const now = Date.now();
-        if (now - st.lastFxAt < AMPED_FX_COOLDOWN_MS) return;
-        st.lastFxAt = now;
+        let shots = Math.max(0, st.lastMag - mag); // rounds consumed since last tick
+        let preConsume = 0;
+        // Trigger just pulled but the ammo count hasn't ticked down yet: count 1 shot NOW and pre-
+        // consume it so the ammo drop next tick doesn't double the pop.
+        if (justStarted && shots === 0 && mag > 0) { shots = 1; preConsume = 1; }
+        st.lastMag = mag - preConsume;
+        if (shots <= 0) return;
 
-        fireAmpedFx(player, weapon);
+        // SOUND — one pop per shot, DECOUPLED from the FX raycast cooldown. The ammo delta already
+        // rate-limits this to the real fire rate (a bullet per fire interval, not per tick), so it
+        // tracks the gun bullet-for-bullet instead of lagging behind the 120ms FX throttle.
         playAmpedHitSound(player);
+
+        // FX RAYCAST — still throttled (protects the ~1 raycast/tick budget; the FX needn't be per-bullet).
+        const now = Date.now();
+        if (now - st.lastFxAt >= AMPED_FX_COOLDOWN_MS) {
+            st.lastFxAt = now;
+            fireAmpedFx(player, weapon);
+        }
     } catch {}
 }
 

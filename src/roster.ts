@@ -7,8 +7,8 @@
 // MIN_PLAYERS floor and are replaced 1:1 by joining humans.
 // ============================================================================
 
-import { DEBUG_MODE, MIN_PLAYERS } from './config.ts';
-import { botSlots, claimSlotForBot, freeSlotTeamId, humanCount, releaseSlot } from './teams.ts';
+import { DEBUG_MODE, BOT_COUNT, MAX_PLAYERS } from './config.ts';
+import { botSlots, claimSlotForBot, freeBotTeamId, releaseBotSlot, humanCount } from './teams.ts';
 
 export interface BotIdentity {
     id: number;
@@ -64,6 +64,41 @@ function log(msg: string): void {
     if (DEBUG_MODE) console.log(`[Roster] ${msg}`);
 }
 
+// On this template a RAW string in mod.Message renders as "unknown" — text must be
+// a REGISTERED key. Bot names are flat top-level "bot_<slug>" keys; look up
+// dynamically (flat top-level works; nested does not).
+function botNameMessage(name: string): mod.Message {
+    // Deadlock's exact form — renders "Hope [BOT]" in the game-native nametag/killfeed. A BARE
+    // single-token raw string (mod.Message('Hope')) instead renders "unknown string" (the game
+    // treats a single token as a failed string-KEY lookup), so the " [BOT]" suffix is required
+    // to make it a literal. The stray "\[" the player saw is a SEPARATE issue: it's our custom
+    // leaderboard escaping "[" in a UI-text widget (fixed there), NOT this native name.
+    return mod.Message(name + ' [BOT]');
+}
+
+/**
+ * Display name for ANY player in CUSTOM UI text. The engine SANITIZES dynamic
+ * player-name substitution (mod.Message(player)) in custom UI-text widgets,
+ * escaping markup chars — a bot's literal "Hope [BOT]" name rendered as
+ * "Hope \[BOT]" on the TOP PLAYERS board. REGISTERED strings render brackets
+ * literally, and strings.json already has a bot_<name> key per roster name —
+ * so bots resolve through their registered key; humans keep Message(player).
+ */
+export function playerDisplayMessage(p: mod.Player): mod.Message {
+    try {
+        if (mod.GetSoldierState(p, mod.SoldierStateBool.IsAISoldier)) {
+            const ident = identityByCurrentPlayerId(mod.GetObjId(p));
+            if (ident) {
+                // Key rule (matches strings.json): lowercase, trailing underscores
+                // stripped ("mikedeluca_" -> bot_mikedeluca, "ty_ger07" -> bot_ty_ger07).
+                const key = (mod.stringkeys as mod.Any)['bot_' + ident.name.toLowerCase().replace(/_+$/, '')];
+                if (key !== undefined) return mod.Message(key);
+            }
+        }
+    } catch {}
+    return mod.Message(p);
+}
+
 function takeName(): string {
     if (shuffledNames.length === 0) {
         shuffledNames = [...BOT_NAME_POOL];
@@ -105,7 +140,9 @@ export function adoptBotPlayer(bot: mod.Player, identityId: number): void {
  * The identity persists; the engine player is disposable.
  */
 export function spawnBotIntoFreeSlot(position: mod.Vector): BotIdentity | null {
-    const teamId = freeSlotTeamId();
+    // Each bot gets its OWN team (3, 4, 5, ...) — natively hostile to everyone,
+    // no friendly-fire / same-team-AI-damage dependency. Kept across respawns.
+    const teamId = freeBotTeamId();
     if (teamId === null) {
         log('no free slot for bot');
         return null;
@@ -128,14 +165,19 @@ export function spawnBotIntoFreeSlot(position: mod.Vector): BotIdentity | null {
             position,
             mod.CreateVector(0, 0, 0)
         ) as unknown as mod.Spawner;
+        // FALSE: keep the dead bot's body so it RAGDOLLS normally (TRUE made it instantly poof out
+        // of existence on death). The corpse is cleared a beat later by the delayed undeploy in the
+        // OnPlayerDied bot branch, before respawnBot spawns a fresh AI.
         mod.AISetUnspawnOnDead(spawner, false);
         ident.spawner = spawner;
-        mod.SpawnAIFromAISpawner(spawner, mod.SoldierClass.Assault, mod.Message(ident.name), team);
+        mod.SpawnAIFromAISpawner(spawner, mod.SoldierClass.Assault, botNameMessage(ident.name), team);
         identities.set(ident.id, ident);
         claimSlotForBot(teamId, ident.id);
-        log(`bot ${ident.name} (identity ${ident.id}) -> solo team ${teamId}`);
+        log(`bot ${ident.name} (identity ${ident.id}) -> own team ${teamId}`);
         return ident;
-    } catch {
+    } catch (e) {
+        // Crash diag: surface WHY a bot failed (e.g. invalid bot team, no spawner).
+        console.log(`[Roster] BOT SPAWN FAILED on team ${teamId}: ${e}`);
         return null;
     }
 }
@@ -152,7 +194,9 @@ export function respawnBot(ident: BotIdentity, position: mod.Vector): void {
                     mod.CreateTransform(position, mod.CreateVector(0, 0, 0))
                 );
             } catch {}
-            mod.SpawnAIFromAISpawner(ident.spawner, mod.SoldierClass.Assault, mod.Message(ident.name), team);
+            // Same registered-key name as the initial spawn — a raw string here left
+            // every RESPAWNED bot nameless ("unknown string").
+            mod.SpawnAIFromAISpawner(ident.spawner, mod.SoldierClass.Assault, botNameMessage(ident.name), team);
         }
         ident.currentPlayerId = null; // re-adopted on deploy
     } catch {}
@@ -174,7 +218,7 @@ export function despawnBot(ident: BotIdentity): void {
             } catch {}
         }
     } catch {}
-    if (ident.teamId !== null) releaseSlot(ident.teamId);
+    releaseBotSlot(ident.id);
     identities.delete(ident.id);
     log(`bot ${ident.name} (identity ${ident.id}) despawned; slot freed`);
 }
@@ -197,11 +241,12 @@ export function pickReplaceableBot(): BotIdentity | null {
 }
 
 /**
- * Keep the MIN_PLAYERS floor: spawn bots into free slots until humans + bots
- * reach the floor (spawn positions supplied by the caller, one per call site
- * tick — 1 spawn per spawner per tick, per the Discord rule).
+ * FILL-EMPTY-TEAMS bot target: bots occupy the declared teams humans haven't taken, so
+ * the target is min(BOT_COUNT, free teams) = min(BOT_COUNT, MAX_PLAYERS - humans). As
+ * humans join, the target shrinks and index.ts evicts the surplus bots. Spawned one per
+ * tick (Discord P18: never same-frame multi-spawn).
  */
 export function backfillNeeded(): number {
-    const total = humanCount() + botSlots().length;
-    return Math.max(0, MIN_PLAYERS - total);
+    const target = Math.min(BOT_COUNT, MAX_PLAYERS - humanCount());
+    return Math.max(0, target - botSlots().length);
 }

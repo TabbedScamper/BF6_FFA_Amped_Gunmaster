@@ -22,8 +22,9 @@ import {
     POWERUP_DROP_CHANCE,
     POWERUP_SPAWN_COOLDOWN_MS,
     POWERUP_DROP_TABLE,
+    DEMOTION_MAX_BACK,
 } from './config.ts';
-import { shiftTiers, applyTierWeapon } from './ladder.ts';
+import { shiftTiers, applyTierWeapon, progressOf } from './ladder.ts';
 
 const RS = mod.RuntimeSpawn_Common;
 const ZERO = mod.CreateVector(0, 0, 0);
@@ -42,9 +43,10 @@ const DEMO_COLOR = mod.CreateVector(1, 0.15, 0.15); // RED = demotion
 // Object Operations" thread — OverTime functions are "set it and forget it").
 const SPIN_PERIOD_S = 2.5; // one full revolution every 2.5s, looped by the engine
 const SPIN_FULL = mod.CreateVector(0, Math.PI * 2, 0); // yaw rotation delta per period
-const SFX_PROMO = RS.SFX_UI_Notification_Primary_D_2D;
-const SFX_DEMO_LOADED = RS.SFX_UI_MainMenu_PressPlay_OneShot2D;
-const SFX_PICKUP = RS.SFX_UI_Gauntlet_Beacons_BeaconPickup_OneShot2D;
+// Sounds matched EXACTLY to the Undead Gunmaster archive (SFX_CONFIG).
+const SFX_PROMO = RS.SFX_UI_Notification_Primary_D_2D; // SFX_CONFIG.PROMOTION
+const SFX_DEMO_LOADED = RS.SFX_UI_MainMenu_PressPlay_OneShot2D; // SFX_CONFIG.DEMOTION
+const SFX_PICKUP = RS.SFX_GameModes_BR_Mission_WeaponCache_Open_OneShot3D; // SFX_CONFIG.POWERUP_PICKUP
 
 type Kind = 'promo' | 'demo';
 
@@ -57,24 +59,62 @@ interface LivePowerup {
     sparksObj: mod.Object | null;
     spawnedAt: number;
     expireTimer: number;
+    raised: mod.Vector; // spawn position (death spot + lift); spin rotates about this
+    rot: number; // current spin angle (advanced by the ONE shared spin loop)
 }
 
 const live: Map<number, LivePowerup> = new Map(); // id -> powerup
 const pendingDemotion: Map<number, number> = new Map(); // playerId -> loaded demotion tiers
+// playerId -> guns to show as lost via the red "DEMOTED / N GUNS" box callout on their NEXT
+// deploy. Set when a demotion actually LANDS (marked-kill victim OR own-charge backfire), so
+// both routes share the single respawn callout (replaces the -N center flashes).
+const pendingDemoCallout: Map<number, number> = new Map();
+// playerId -> a demotion was applied but the demotion LOCK fully absorbed it (0 guns lost). On the
+// next deploy this shows the GREEN "DEMOTION LOCKED" box + green screen flash + a "safe" sound,
+// instead of the red DEMOTED callout — the lock protected them.
+const pendingLockCallout: Set<number> = new Set();
 let nextId = 1;
 let lastDropAt = 0; // Date.now() of the last drop (global cooldown)
 
 // HUD hooks (registered by index.ts; decouples powerups from the UI module).
 export interface PowerupHud {
-    flash(player: mod.Player, text: string, color: 'green' | 'red' | 'gold' | 'white', ms?: number): void;
     refresh(player: mod.Player): void;
+    setDemotionWarning(player: mod.Player, n: number): void; // paint at-risk cards red
+    clearDemotionWarning(player: mod.Player): void; // clear the red at-risk cards
+    powerupPromo(player: mod.Player, magnitude: number): void; // green "PROMOTED! / +N GUNS" box note
+    demoLoaded(player: mod.Player): void; // bright-red "GET A KILL!" box note (charge picked up)
 }
+// Powerup banner text is CUSTOM TEXT -> keyed in strings.json (ffa.flash.*),
+// numbers passed as placeholder args.
+const SK = (): mod.Any => mod.stringkeys;
 let hud: PowerupHud | null = null;
 export function setPowerupHud(h: PowerupHud): void {
     hud = h;
 }
 
 let pickupInterval: number | null = null;
+let spinInterval: number | null = null;
+
+const SPIN_STEP = 0.09; // radians per tick
+
+// ONE shared spin loop for ALL live powerups (vs a Timers.setInterval per powerup).
+// Each object still needs its own SetObjectTransform (bf6-MultiObjectTransform: the
+// engine call is per-object; the win is a single scheduler, not N timers).
+function spinLoop(): void {
+    if (live.size === 0) return;
+    for (const pu of live.values()) {
+        if (!pu.numberObj) continue;
+        pu.rot += SPIN_STEP;
+        try {
+            mod.SetObjectTransform(
+                pu.numberObj as mod.SpatialObject,
+                // Yaw only (rotate about the vertical STANDING axis) so the number stays
+                // upright and readable — no pitch/roll, so it never tumbles upside down.
+                mod.CreateTransform(pu.raised, mod.CreateVector(0, pu.rot, 0))
+            );
+        } catch {}
+    }
+}
 
 function log(msg: string): void {
     if (DEBUG_MODE) console.log(`[Powerups] ${msg}`);
@@ -135,14 +175,13 @@ function playSfx(sfx: mod.RuntimeSpawn_Common, player: mod.Player, amp: number =
     try {
         const obj = mod.SpawnObject(sfx, ZERO, ZERO) as mod.SFX;
         mod.PlaySound(obj, sfxVol(amp), player);
+        // Cleanup ONLY — no StopSound. The pickup chime runs ~4.5s; 5.5s outlasts it so it's never
+        // clipped. Amped weapon fire is the sole sound we intentionally cut short (in amped.ts).
         Timers.setTimeout(() => {
-            try {
-                mod.StopSound(obj);
-            } catch {}
             try {
                 mod.UnspawnObject(obj as unknown as mod.Object);
             } catch {}
-        }, 1200);
+        }, 5500);
     } catch {}
 }
 
@@ -185,18 +224,20 @@ export function trySpawnAtDeath(pos: mod.Vector): void {
 function spawnAt(pos: mod.Vector, kind: Kind, magnitude: number): void {
     const id = nextId++;
 
+    // Spawn the floating number 1.5m ABOVE the death spot (was 0.5m — too low,
+    // it sat in the floor). Matches the Undead Gunmaster's +1.5 lift.
+    const raised = mod.Add(pos, mod.CreateVector(0, 1.5, 0));
     let numberObj: mod.Object | null = null;
     try {
-        numberObj = mod.SpawnObject(NUMBER_PROP[magnitude - 1], mod.Add(pos, mod.CreateVector(0, 0.5, 0)), ZERO);
-        if (numberObj) {
-            // Engine-driven infinite spin (one call; loops server-side).
-            mod.MoveObjectOverTime(numberObj, ZERO, SPIN_FULL, SPIN_PERIOD_S, true, false);
-        }
+        numberObj = mod.SpawnObject(NUMBER_PROP[magnitude - 1], raised, ZERO);
     } catch {}
-    // Persistent sparks FX (promo vs demo), tinted to guarantee blue/red.
+    // No per-powerup timer — the ONE shared spinLoop() rotates every live powerup
+    // (studied bf6-MultiObjectTransform: SetObjectTransform is still 1 engine call
+    // per object, so the win is centralizing to a single loop instead of N timers).
+    // Persistent sparks FX (promo vs demo), tinted to guarantee blue/red — raised too.
     let sparksObj: mod.Object | null = null;
     try {
-        sparksObj = mod.SpawnObject(kind === 'promo' ? PROMO_SPARKS : DEMO_SPARKS, pos, ZERO, mod.CreateVector(1, 1, 1));
+        sparksObj = mod.SpawnObject(kind === 'promo' ? PROMO_SPARKS : DEMO_SPARKS, raised, ZERO, mod.CreateVector(1, 1, 1));
         if (sparksObj) {
             try {
                 mod.SetVFXColor(sparksObj as mod.VFX, kind === 'promo' ? PROMO_COLOR : DEMO_COLOR);
@@ -206,7 +247,7 @@ function spawnAt(pos: mod.Vector, kind: Kind, magnitude: number): void {
     } catch {}
 
     const expireTimer = Timers.setTimeout(() => despawn(id), POWERUP_LIFETIME_MS);
-    live.set(id, { id, kind, magnitude, pos, numberObj, sparksObj, spawnedAt: Date.now(), expireTimer });
+    live.set(id, { id, kind, magnitude, pos, numberObj, sparksObj, spawnedAt: Date.now(), expireTimer, raised, rot: 0 });
     log(`dropped ${kind} ${magnitude}x at death (id ${id})`);
 }
 
@@ -275,21 +316,33 @@ function checkPickups(): void {
 
 function applyPickup(player: mod.Player, pu: LivePowerup): void {
     try {
-        playSfx(SFX_PICKUP, player, 1.0);
+        // SFX_PICKUP is a 3D sound — a 3D SFX played WITHOUT a position is heard by NO
+        // ONE (Aryo-thread truth table; this sting was silent). Play it AT the powerup:
+        // the picker is standing on it, and nearby players hear the grab too.
+        try {
+            const obj = mod.SpawnObject(SFX_PICKUP, ZERO, ZERO) as mod.SFX;
+            mod.PlaySound(obj, sfxVol(1.0), pu.pos, 40);
+            Timers.setTimeout(() => {
+                try { mod.UnspawnObject(obj as unknown as mod.Object); } catch {}
+            }, 5500);
+        } catch {}
         if (pu.kind === 'promo') {
             const newIdx = shiftTiers(player, pu.magnitude);
             applyTierWeapon(player); // give the better gun right now
-            playSfx(SFX_PROMO, player, 1.5);
-            hud?.flash(player, `PROMOTED  +${pu.magnitude}`, 'green');
+            playSfx(SFX_PROMO, player, 2.0);
+            hud?.powerupPromo(player, pu.magnitude); // "PROMOTED! / +N GUNS" box note
             hud?.refresh(player);
             log(`PROMO ${pu.magnitude}x -> tier ${newIdx}`);
         } else {
             const playerId = mod.GetObjId(player);
             pendingDemotion.set(playerId, (pendingDemotion.get(playerId) ?? 0) + pu.magnitude);
-            playSfx(SFX_DEMO_LOADED, player, 1.5);
+            playSfx(SFX_DEMO_LOADED, player, 2.0);
             const total = pendingDemotion.get(playerId) ?? pu.magnitude;
             spot(player, true); // light them up for the whole lobby
-            hud?.flash(player, `DEMOTION LOADED  −${total}  ·  GET A KILL!`, 'red', 2600);
+            hud?.demoLoaded(player); // bright-red "GET A KILL!" box note (red cards show which guns)
+            // Cap the at-risk red cards at the demotion lock — you can never lose more than
+            // DEMOTION_MAX_BACK guns, so never warn on more than that many.
+            hud?.setDemotionWarning(player, Math.min(total, DEMOTION_MAX_BACK));
             log(`DEMO ${pu.magnitude}x LOADED onto ${playerId} (pending ${total})`);
         }
     } catch {}
@@ -299,20 +352,33 @@ function applyPickup(player: mod.Player, pu: LivePowerup): void {
 // Hot-potato hooks — called from the kill / death handlers in index.ts.
 // ---------------------------------------------------------------------------
 
-/** Killer had a pending demotion? Dump it on the victim and clear it. */
-export function onKillOffloadDemotion(killer: mod.Player, victim: mod.Player): void {
+/** Killer had a pending demotion? Dump it on the victim and clear it. Returns the guns the victim
+ *  actually lost (0 if the killer wasn't carrying a charge, or the victim's lock ate it). */
+export function onKillOffloadDemotion(killer: mod.Player, victim: mod.Player): number {
     try {
         const killerId = mod.GetObjId(killer);
         const n = pendingDemotion.get(killerId);
-        if (!n || n <= 0) return;
+        if (!n || n <= 0) return 0;
         pendingDemotion.delete(killerId);
         spot(killer, false); // no longer carrying it
-        const newIdx = shiftTiers(victim, -n); // applies on the victim's respawn
-        playSfx(SFX_DEMO_LOADED, killer, 1.5);
-        hud?.flash(killer, `DUMPED IT!  −${n} ON THEM`, 'green');
-        hud?.flash(victim, `DEMOTED  −${n}  ·  killed by a marked player`, 'red', 2600);
-        log(`offload: victim demoted ${n} -> tier ${newIdx}`);
+        hud?.clearDemotionWarning(killer); // got a kill -> offloaded -> clear the red cards
+        const vBefore = progressOf(victim)?.ladderIndex ?? 0;
+        const newIdx = shiftTiers(victim, -n); // applies on the victim's respawn (capped by the lock)
+        const lost = Math.max(0, vBefore - newIdx); // ACTUAL guns lost after the demotion lock
+        playSfx(SFX_DEMO_LOADED, killer, 2.0);
+        // No "DUMPED IT!" flash for the killer, no "-N marked" flash for the victim — the
+        // victim gets the red DEMOTED box callout on their respawn instead (queued here), showing
+        // the REAL guns lost (never more than the demotion lock allows).
+        const victimId = mod.GetObjId(victim);
+        if (lost > 0) {
+            pendingDemoCallout.set(victimId, (pendingDemoCallout.get(victimId) ?? 0) + lost);
+        } else {
+            pendingLockCallout.add(victimId); // lock ate the whole demotion -> green "DEMOTION LOCKED"
+        }
+        log(`offload: victim demoted ${n} (lost ${lost}) -> tier ${newIdx}${lost === 0 ? ' [LOCKED]' : ''}`);
+        return lost;
     } catch {}
+    return 0;
 }
 
 /** Player died still holding a pending demotion? It backfires onto them. */
@@ -323,13 +389,35 @@ export function onDeathBackfireDemotion(player: mod.Player): void {
         if (!n || n <= 0) return;
         pendingDemotion.delete(playerId);
         spot(player, false);
-        const newIdx = shiftTiers(player, -n); // applies on their respawn
-        log(`backfire: ${playerId} self-demoted ${n} -> tier ${newIdx}`);
+        hud?.clearDemotionWarning(player); // charge spent (backfired) -> clear the red cards
+        const before = progressOf(player)?.ladderIndex ?? 0;
+        const newIdx = shiftTiers(player, -n); // applies on their respawn (capped by the lock)
+        const lost = Math.max(0, before - newIdx); // ACTUAL guns lost after the demotion lock
+        if (lost > 0) {
+            pendingDemoCallout.set(playerId, (pendingDemoCallout.get(playerId) ?? 0) + lost); // red DEMOTED box on respawn
+        } else {
+            pendingLockCallout.add(playerId); // lock ate the whole demotion -> green "DEMOTION LOCKED"
+        }
+        log(`backfire: ${playerId} self-demoted ${n} (lost ${lost}) -> tier ${newIdx}${lost === 0 ? ' [LOCKED]' : ''}`);
     } catch {}
 }
 
 export function hasPendingDemotion(playerId: number): number {
     return pendingDemotion.get(playerId) ?? 0;
+}
+
+/** Pop the queued "DEMOTED / N GUNS" respawn callout for this player (0 if none). */
+export function takeDemoCallout(playerId: number): number {
+    const n = pendingDemoCallout.get(playerId) ?? 0;
+    pendingDemoCallout.delete(playerId);
+    return n;
+}
+
+/** Pop the queued green "DEMOTION LOCKED" respawn callout (true if a demotion was fully blocked). */
+export function takeLockCallout(playerId: number): boolean {
+    const had = pendingLockCallout.has(playerId);
+    pendingLockCallout.delete(playerId);
+    return had;
 }
 
 export function clearPowerupState(playerId: number): void {
@@ -338,6 +426,8 @@ export function clearPowerupState(playerId: number): void {
         if (p) spot(p, false);
     }
     pendingDemotion.delete(playerId);
+    pendingDemoCallout.delete(playerId);
+    pendingLockCallout.delete(playerId);
 }
 
 // ---------------------------------------------------------------------------
@@ -346,17 +436,31 @@ export function clearPowerupState(playerId: number): void {
 export function startPowerups(): void {
     stopPowerups();
     pendingDemotion.clear();
+    pendingDemoCallout.clear();
+    pendingLockCallout.clear();
     pickupInterval = Timers.setInterval(() => {
         checkPickups();
         spotCarriers();
     }, 250);
+    spinInterval = Timers.setInterval(spinLoop, 50); // single loop spins every powerup
     log('powerup system started');
 }
 
-export function stopPowerups(): void {
+export function stopPowerups(despawnObjects: boolean = true): void {
     if (pickupInterval !== null) {
         Timers.clearInterval(pickupInterval);
         pickupInterval = null;
     }
-    for (const id of [...live.keys()]) despawn(id);
+    if (spinInterval !== null) {
+        Timers.clearInterval(spinInterval);
+        spinInterval = null;
+    }
+    if (despawnObjects) {
+        for (const id of [...live.keys()]) despawn(id);
+    } else {
+        // TEARDOWN (match end / host exit): do NOT UnspawnObject — the engine is already
+        // freeing the world, and unspawning an already-removed prop hard-crashes on exit.
+        // Just drop our JS references and let the engine reclaim the props.
+        live.clear();
+    }
 }
